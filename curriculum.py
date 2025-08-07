@@ -47,6 +47,9 @@ def recommend_subjects(G, approved_subjects, current_semester, credits_per_semes
     available_subjects = get_available_subjects(G, approved_subjects, current_semester)
     credit_limit = credits_per_semester[current_semester] // 2 - 1 if is_half_time else credits_per_semester[current_semester]
     credit_limit = min(credit_limit + extra_credits, 25)  # Máximo 25 créditos
+    if is_half_time and extra_credits > 1:  # Validar máximo 1 crédito extra con media matrícula
+        extra_credits = 1
+        credit_limit = min(credit_limit + extra_credits, 25)
     selected_subjects = []
     total_credits = 0
     
@@ -63,39 +66,51 @@ def recommend_subjects(G, approved_subjects, current_semester, credits_per_semes
             selected_subjects.append(subject)
             total_credits += G.nodes[subject]["credits"]
     
-    # Incluir intersemestral si aplica
+    # Incluir intersemestral si aplica (sin contar en el límite de créditos)
+    intersemestral_credits = 0
     if intersemestral:
         selected_subjects.append(intersemestral)
+        intersemestral_credits = G.nodes[intersemestral]["credits"]
     
-    return selected_subjects, total_credits
+    # Calcular costo
+    cost = 10000000  # Costo fijo por semestre
+    if total_credits > credits_per_semester[current_semester]:
+        extra_credits_used = total_credits - credits_per_semester[current_semester]
+        cost += extra_credits_used * 800000  # Costo por crédito extra
+    
+    return selected_subjects, total_credits, intersemestral_credits, cost
 
 def generate_full_plan(G, approved_subjects, program, credits_per_semester, calculate_semester, semester_options):
     plan = []
     current_approved = approved_subjects.copy()
     total_credits_approved = sum(G.nodes[course]["credits"] for course in current_approved)
     current_semester = calculate_semester(total_credits_approved)
-    total_credits_required = sum(G.nodes[course]["credits"] for course in G.nodes)
+    total_credits_required = 180 if program == "Fisioterapia" else 189
+    total_cost = 0
     
     while total_credits_approved < total_credits_required:
         is_half_time = semester_options.get(current_semester, {}).get("is_half_time", False)
         extra_credits = semester_options.get(current_semester, {}).get("extra_credits", 0)
         intersemestral = semester_options.get(current_semester, {}).get("intersemestral", None)
         
-        subjects, credits = recommend_subjects(
+        subjects, credits, intersemestral_credits, semester_cost = recommend_subjects(
             G, current_approved, current_semester, credits_per_semester, is_half_time, extra_credits, intersemestral
         )
         plan.append({
             "semester": current_semester,
             "subjects": subjects,
             "credits": credits,
+            "intersemestral_credits": intersemestral_credits,
             "is_half_time": is_half_time,
             "extra_credits": extra_credits,
-            "intersemestral": intersemestral
+            "intersemestral": intersemestral,
+            "cost": semester_cost
         })
         current_approved.extend(subjects)
-        total_credits_approved += credits
+        total_credits_approved += credits + intersemestral_credits
+        total_cost += semester_cost
         if intersemestral:
             current_approved.append(intersemestral)
         current_semester = calculate_semester(total_credits_approved)
     
-    return plan
+    return plan, total_cost
