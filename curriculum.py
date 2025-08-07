@@ -19,7 +19,7 @@ def build_curriculum_graph(courses):
 @lru_cache(maxsize=1000)
 def get_available_subjects(G_tuple, approved_subjects_tuple, current_semester):
     G, prereq_cache = G_tuple
-    approved_subjects = set(approved_subjects_tuple)  # Convert tuple to set for O(1) lookups
+    approved_subjects = set(approved_subjects_tuple)
     available = []
     mandatory = [course for course in G.nodes if "Inglés" in course or "Core Currículum" in course]
     
@@ -34,11 +34,11 @@ def get_available_subjects(G_tuple, approved_subjects_tuple, current_semester):
                     available.insert(0, course)
                 elif G.nodes[course]["semester"] <= current_semester + 1:
                     available.append(course)
-    return tuple(available)  # Ensure tuple of strings
+    return tuple(available)
 
 def get_intersemestral_options(G_tuple, approved_subjects):
     G, prereq_cache = G_tuple
-    approved_subjects = set(approved_subjects)  # Convert to set for efficiency
+    approved_subjects = set(approved_subjects)
     intersemestral = []
     for course in G.nodes:
         if course.startswith("Inglés") or course == "Precálculo":
@@ -47,11 +47,13 @@ def get_intersemestral_options(G_tuple, approved_subjects):
             prereqs = prereq_cache[course]["prerequisites"]
             if all(prereq in approved_subjects for prereq in prereqs):
                 intersemestral.append(course)
-    return intersemestral[:2]  # Limit to at most 2 options
+    return intersemestral[:2]
 
 def recommend_subjects(G_tuple, approved_subjects, current_semester, credits_per_semester, is_half_time=False, extra_credits=0, intersemestral=None):
     G, prereq_cache = G_tuple
-    available_subjects = list(get_available_subjects(G_tuple, tuple(approved_subjects), current_semester))  # Convert tuple to list
+    # Ensure approved_subjects contains only strings
+    approved_subjects = [str(s) for s in approved_subjects if isinstance(s, str)]
+    available_subjects = list(get_available_subjects(G_tuple, tuple(approved_subjects), current_semester))
     semester_key = min(current_semester, 10)
     credit_limit = credits_per_semester[semester_key] // 2 - 1 if is_half_time else credits_per_semester[semester_key]
     credit_limit = min(credit_limit + extra_credits, 25)
@@ -84,11 +86,13 @@ def recommend_subjects(G_tuple, approved_subjects, current_semester, credits_per
     if intersemestral:
         semester_cost += 1500000
     
+    # Ensure selected_subjects contains only strings
+    selected_subjects = [str(s) for s in selected_subjects]
     return selected_subjects, total_credits, intersemestral_credits, semester_cost, extra_credits
 
 def estimate_remaining_semesters(G_tuple, approved_subjects, total_credits_required, credits_per_semester, current_semester, is_half_time=False):
     G, _ = G_tuple
-    approved_subjects = list(approved_subjects)  # Ensure list for processing
+    approved_subjects = [str(s) for s in approved_subjects if isinstance(s, str)]
     remaining_credits = total_credits_required - sum(G.nodes[c]["credits"] for c in approved_subjects)
     semester_key = min(current_semester, 10)
     avg_credits_per_semester = credits_per_semester[semester_key] // 2 - 1 if is_half_time else credits_per_semester[semester_key]
@@ -97,7 +101,7 @@ def estimate_remaining_semesters(G_tuple, approved_subjects, total_credits_requi
 def generate_full_plan(G_tuple, approved_subjects, program, credits_per_semester, calculate_semester, semester_options):
     G, prereq_cache = G_tuple
     plan = []
-    current_approved = list(approved_subjects)  # Ensure list
+    current_approved = [str(s) for s in approved_subjects if isinstance(s, str)]
     total_credits_approved = sum(G.nodes[course]["credits"] for course in current_approved)
     current_semester = min(calculate_semester(total_credits_approved), 10)
     total_credits_required = 180 if program == "Fisioterapia" else 189
@@ -146,11 +150,11 @@ def generate_full_plan(G_tuple, approved_subjects, program, credits_per_semester
             "intersemestral": best_config["intersemestral"],
             "cost": best_config["semester_cost"]
         })
-        current_approved.extend(best_config["subjects"])
+        current_approved.extend([str(s) for s in best_config["subjects"]])
         total_credits_approved += best_config["credits"] + best_config["intersemestral_credits"]
         total_cost += best_config["semester_cost"]
         if best_config["intersemestral"]:
-            current_approved.append(best_config["intersemestral"])
+            current_approved.append(str(best_config["intersemestral"]))
         
         current_semester = min(calculate_semester(total_credits_approved), 10)
         next_semester_threshold = credit_thresholds.get(semester_counter + 1, credit_thresholds[10])
