@@ -63,7 +63,7 @@ def update_plan():
         st.session_state.semester_options = {}
         for semester in range(current_semester, 11):
             st.session_state.semester_options[semester] = {
-                "is_half_time": False,  # Se establecerá automáticamente en generate_full_plan
+                "is_half_time": False,
                 "extra_credits": 0,
                 "intersemestral": None
             }
@@ -88,21 +88,21 @@ if st.session_state.plan:
             
             # Configuración del semestre
             is_half_time = st.checkbox(
-                f"Media matrícula (máximo {credits_per_semester[semester] // 2 - 1} créditos)",
+                f"Media matrícula (máximo {credits_per_semester[semester] // 2 - 1} créditos, costo $5,000,000)",
                 value=st.session_state.semester_options[semester]["is_half_time"],
                 key=f"half_time_{semester}_{i}",
                 on_change=update_plan
             )
             max_extra_credits = 1 if is_half_time else 25 - credits_per_semester[semester]
             extra_credits = st.slider(
-                f"Créditos extra a comprar (máximo {max_extra_credits})",
+                f"Créditos extra a comprar (máximo {max_extra_credits}, $800,000 por crédito)",
                 0, max_extra_credits, st.session_state.semester_options[semester]["extra_credits"],
                 key=f"extra_credits_{semester}_{i}",
                 on_change=update_plan
             )
             intersemestral_options = get_intersemestral_options(G, st.session_state.approved_subjects)
             intersemestral = st.selectbox(
-                f"Intersemestral (opcional)",
+                f"Intersemestral (opcional, $1,500,000)",
                 ["Ninguno"] + intersemestral_options,
                 index=intersemestral_options.index(st.session_state.semester_options[semester]["intersemestral"]) + 1 if st.session_state.semester_options[semester]["intersemestral"] in intersemestral_options else 0,
                 key=f"intersemestral_{semester}_{i}",
@@ -120,11 +120,11 @@ if st.session_state.plan:
             st.write(f"**Créditos**: {semester_plan['credits']} de {credits_per_semester[semester_plan['semester']] if not semester_plan['is_half_time'] else credits_per_semester[semester_plan['semester']] // 2 - 1} disponibles (Intersemestral: {semester_plan['intersemestral_credits']} créditos)")
             st.write(f"**Costo**: ${semester_plan['cost']:,.0f}")
             if semester_plan["is_half_time"]:
-                st.write("**Media matrícula** (activada automáticamente para optimizar el plan)")
+                st.write("**Media matrícula** (recomendada para optimizar costos)")
             if semester_plan["extra_credits"] > 0:
-                st.write(f"**Créditos extra comprados**: {semester_plan['extra_credits']}")
+                st.write(f"**Créditos extra comprados**: {semester_plan['extra_credits']} (recomendado para reducir semestres)")
             if semester_plan["intersemestral"]:
-                st.write(f"**Intersemestral**: {semester_plan['intersemestral']}")
+                st.write(f"**Intersemestral**: {semester_plan['intersemestral']} (recomendado para optimizar costos)")
             st.write("**Asignaturas recomendadas**:")
             for subject in semester_plan["subjects"]:
                 st.write(f"- {subject} ({G.nodes[subject]['credits']} créditos)")
