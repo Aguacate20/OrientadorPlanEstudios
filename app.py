@@ -48,7 +48,6 @@ for semester in range(1, 11):
                     value=st.session_state[key],
                     key=key
                 )
-                st.session_state[key] = selected
                 if selected:
                     approved_subjects.append(course)
 
