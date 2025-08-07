@@ -21,6 +21,9 @@ def get_available_subjects(G, approved_subjects, current_semester):
     mandatory = [course for course in G.nodes if "Inglés" in course or "Core Currículum" in course]
     
     for course in G.nodes:
+        # Excluir asignaturas ya aprobadas
+        if course in approved_subjects:
+            continue
         # Verificar prerrequisitos
         prereqs = [p for p in G.predecessors(course) if G[p][course].get("type") != "corequisite"]
         if all(prereq in approved_subjects for prereq in prereqs):
@@ -38,6 +41,9 @@ def get_intersemestral_options(G, approved_subjects):
     intersemestral = []
     for course in G.nodes:
         if course.startswith("Inglés") or course == "Precálculo":
+            # Excluir intersemestrales ya aprobados
+            if course in approved_subjects:
+                continue
             prereqs = list(G.predecessors(course))
             if all(prereq in approved_subjects for prereq in prereqs):
                 intersemestral.append(course)
