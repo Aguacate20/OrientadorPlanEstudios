@@ -68,10 +68,11 @@ def update_plan():
                 "intersemestral": None
             }
     
-    # Generar el plan
-    st.session_state.plan, st.session_state.total_cost = generate_full_plan(
-        G, st.session_state.approved_subjects, program, credits_per_semester, calculate_semester, st.session_state.semester_options
-    )
+    # Generar el plan con barra de progreso
+    with st.spinner("Generando plan de estudios, por favor espera..."):
+        st.session_state.plan, st.session_state.total_cost = generate_full_plan(
+            G, st.session_state.approved_subjects, program, credits_per_semester, calculate_semester, st.session_state.semester_options
+        )
 
 # Verificar si las asignaturas aprobadas han cambiado
 if sorted(st.session_state.approved_subjects) != sorted(st.session_state.previous_approved_subjects):
