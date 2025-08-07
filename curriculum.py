@@ -96,10 +96,11 @@ def generate_full_plan(G, approved_subjects, program, credits_per_semester, calc
     plan = []
     current_approved = approved_subjects.copy()
     total_credits_approved = sum(G.nodes[course]["credits"] for course in current_approved)
-    current_semester = calculate_semester(total_credits_approved)
+    current_semester = min(calculate_semester(total_credits_approved), 10)  # Cap at 10
     total_credits_required = 180 if program == "Fisioterapia" else 189
     total_cost = 0
     semester_counter = current_semester  # Track displayed semester number
+    credit_thresholds = {i: sum(credits_per_semester.get(j, credits_per_semester[10]) for j in range(1, i + 1)) for i in range(1, 11)}
     
     while total_credits_approved < total_credits_required:
         best_cost = float('inf')
@@ -119,7 +120,7 @@ def generate_full_plan(G, approved_subjects, program, credits_per_semester, calc
                     if intersemestral:
                         temp_approved.append(intersemestral)
                     remaining_semesters = estimate_remaining_semesters(
-                        G, temp_approved, total_credits_required, credits_per_semester, current_semester + 1, is_half_time
+                        G, temp_approved, total_credits_required, credits_per_semester, current_semester, is_half_time
                     )
                     projected_cost = semester_cost + remaining_semesters * (5000000 if is_half_time else 10000000)
                     if projected_cost < best_cost:
@@ -150,10 +151,17 @@ def generate_full_plan(G, approved_subjects, program, credits_per_semester, calc
         total_cost += best_config["semester_cost"]
         if best_config["intersemestral"]:
             current_approved.append(best_config["intersemestral"])
-        # Recalculate current_semester based on credits
-        current_semester = calculate_semester(total_credits_approved)
-        # Increment semester_counter only if not repeating due to half-time
-        if not best_config["is_half_time"] or total_credits_approved >= sum(credits_per_semester[i] for i in range(1, min(current_semester + 1, 11))):
+        
+        # Recalculate current_semester based on credits, capped at 10
+        current_semester = min(calculate_semester(total_credits_approved), 10)
+        
+        # Determine if semester_counter should increment
+        next_semester_threshold = credit_thresholds.get(semester_counter + 1, credit_thresholds[10])
+        if total_credits_approved >= next_semester_threshold and not best_config["is_half_time"]:
             semester_counter += 1
+        elif best_config["is_half_time"]:
+            # Allow repeating semester for half-time without incrementing unless credits exceed threshold
+            if total_credits_approved >= credit_thresholds.get(semester_counter + 1, credit_thresholds[10]):
+                semester_counter += 1
     
     return plan, total_cost
