@@ -37,12 +37,9 @@ for semester in range(1, 11):
     if semester_courses:
         with st.expander(f"Semestre {semester}"):
             for course in semester_courses:
-                # Crear una clave única para cada asignatura
                 key = f"course_{semester}_{course}"
-                # Inicializar el estado de la checkbox si no existe
                 if key not in st.session_state:
                     st.session_state[key] = course in st.session_state.approved_subjects
-                # Mostrar checkbox
                 selected = st.checkbox(
                     course,
                     value=st.session_state[key],
@@ -66,7 +63,7 @@ def update_plan():
         st.session_state.semester_options = {}
         for semester in range(current_semester, 11):
             st.session_state.semester_options[semester] = {
-                "is_half_time": False,
+                "is_half_time": False,  # Se establecerá automáticamente en generate_full_plan
                 "extra_credits": 0,
                 "intersemestral": None
             }
@@ -120,10 +117,10 @@ if st.session_state.plan:
             }
             
             # Mostrar detalles del semestre
-            st.write(f"**Créditos**: {semester_plan['credits']} (Intersemestral: {semester_plan['intersemestral_credits']} créditos)")
+            st.write(f"**Créditos**: {semester_plan['credits']} de {credits_per_semester[semester_plan['semester']] if not semester_plan['is_half_time'] else credits_per_semester[semester_plan['semester']] // 2 - 1} disponibles (Intersemestral: {semester_plan['intersemestral_credits']} créditos)")
             st.write(f"**Costo**: ${semester_plan['cost']:,.0f}")
             if semester_plan["is_half_time"]:
-                st.write("**Media matrícula**")
+                st.write("**Media matrícula** (activada automáticamente para optimizar el plan)")
             if semester_plan["extra_credits"] > 0:
                 st.write(f"**Créditos extra comprados**: {semester_plan['extra_credits']}")
             if semester_plan["intersemestral"]:
