@@ -18,6 +18,11 @@ if "total_cost" not in st.session_state:
 if "previous_approved_subjects" not in st.session_state:
     st.session_state.previous_approved_subjects = []
 
+# Inicializar selecciones por semestre
+for semester in range(1, 11):
+    if f"sem_{semester}_selected" not in st.session_state:
+        st.session_state[f"sem_{semester}_selected"] = []
+
 st.title("Orientador de Plan de Estudios")
 
 # Selección del programa
@@ -31,18 +36,22 @@ G = build_curriculum_graph(courses)
 
 # Selección de asignaturas aprobadas
 st.subheader("Seleccione las asignaturas aprobadas")
-approved_subjects = []
 for semester in range(1, 11):
     semester_courses = [course for course, info in courses.items() if info["semester"] == semester]
     if semester_courses:
-        st.write(f"Semestre {semester}")
-        selected = st.multiselect(
-            f"Asignaturas aprobadas del semestre {semester}",
-            semester_courses,
-            key=f"sem_{semester}",
-            default=[c for c in st.session_state.approved_subjects if c in semester_courses]
-        )
-        approved_subjects.extend(selected)
+        with st.expander(f"Semestre {semester}"):
+            selected = st.multiselect(
+                f"Asignaturas aprobadas del semestre {semester}",
+                semester_courses,
+                key=f"sem_{semester}",
+                default=st.session_state[f"sem_{semester}_selected"]
+            )
+            st.session_state[f"sem_{semester}_selected"] = selected
+
+# Combinar selecciones de todos los semestres
+approved_subjects = []
+for semester in range(1, 11):
+    approved_subjects.extend(st.session_state[f"sem_{semester}_selected"])
 
 # Actualizar asignaturas aprobadas en el estado
 st.session_state.approved_subjects = approved_subjects
