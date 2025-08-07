@@ -81,19 +81,20 @@ if sorted(st.session_state.approved_subjects) != sorted(st.session_state.previou
 # Mostrar plan en pestañas
 if st.session_state.plan:
     st.subheader("Plan de estudios recomendado")
-    tabs = st.tabs([f"Semestre {p['semester']}" for p in st.session_state.plan])
+    tabs = st.tabs([f"Semestre {p['semester']}{' (repetido)' if p['repetition'] > 1 else ''}" for p in st.session_state.plan])
     for i, (tab, semester_plan) in enumerate(zip(tabs, st.session_state.plan)):
         with tab:
             semester = semester_plan["semester"]
+            effective_semester = min(semester, 10)
             
             # Configuración del semestre
             is_half_time = st.checkbox(
-                f"Media matrícula (máximo {credits_per_semester[semester] // 2 - 1} créditos, costo $5,000,000)",
+                f"Media matrícula (máximo {credits_per_semester[effective_semester] // 2 - 1} créditos, costo $5,000,000)",
                 value=st.session_state.semester_options[semester]["is_half_time"],
                 key=f"half_time_{semester}_{i}",
                 on_change=update_plan
             )
-            max_extra_credits = 1 if is_half_time else 25 - credits_per_semester[semester]
+            max_extra_credits = 1 if is_half_time else 25 - credits_per_semester[effective_semester]
             extra_credits = st.slider(
                 f"Créditos extra a comprar (máximo {max_extra_credits}, $800,000 por crédito)",
                 0, max_extra_credits, st.session_state.semester_options[semester]["extra_credits"],
@@ -117,7 +118,7 @@ if st.session_state.plan:
             }
             
             # Mostrar detalles del semestre
-            st.write(f"**Créditos**: {semester_plan['credits']} de {credits_per_semester[semester_plan['semester']] if not semester_plan['is_half_time'] else credits_per_semester[semester_plan['semester']] // 2 - 1} disponibles (Intersemestral: {semester_plan['intersemestral_credits']} créditos)")
+            st.write(f"**Créditos**: {semester_plan['credits']} de {credits_per_semester[effective_semester] if not semester_plan['is_half_time'] else credits_per_semester[effective_semester] // 2 - 1} disponibles (Intersemestral: {semester_plan['intersemestral_credits']} créditos)")
             st.write(f"**Costo**: ${semester_plan['cost']:,.0f}")
             if semester_plan["is_half_time"]:
                 st.write("**Media matrícula** (recomendada para optimizar costos)")
