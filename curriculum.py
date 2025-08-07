@@ -5,9 +5,10 @@ import networkx as nx
 import streamlit as st
 from courses_data import fisioterapia_courses, enfermeria_courses, credits_per_semester_fisioterapia, credits_per_semester_enfermeria, calculate_semester_fisioterapia, calculate_semester_enfermeria
 
-def build_curriculum_graph(courses):
+@st.cache_resource
+def build_curriculum_graph(_courses):
     G = nx.DiGraph()
-    for course, info in courses.items():
+    for course, info in _courses.items():
         G.add_node(course, credits=info["credits"], semester=info["semester"])
         if "prerequisites" in info:
             for prereq in info["prerequisites"]:
@@ -56,31 +57,25 @@ def recommend_subjects(G, approved_subjects, current_semester, credits_per_semes
         extra_credits = 1
         credit_limit = min(credit_limit + extra_credits, 25)
     
-    # Separar asignaturas obligatorias y no obligatorias
     mandatory = [s for s in available_subjects if "Inglés" in s or "Core Currículum" in s]
     optional = [s for s in available_subjects if s not in mandatory]
     
-    # Ordenar opcionales por créditos descendentes y semestre sugerido
     optional.sort(key=lambda s: (-G.nodes[s]["credits"], G.nodes[s]["semester"]))
     
-    # Seleccionar asignaturas obligatorias
     selected_subjects = mandatory.copy()
     total_credits = sum(G.nodes[s]["credits"] for s in mandatory)
     
-    # Agregar asignaturas opcionales para maximizar créditos
     for subject in optional:
         subject_credits = G.nodes[subject]["credits"]
         if total_credits + subject_credits <= credit_limit:
             selected_subjects.append(subject)
             total_credits += subject_credits
     
-    # Incluir intersemestral si aplica
     intersemestral_credits = 0
     if intersemestral:
         selected_subjects.append(intersemestral)
         intersemestral_credits = G.nodes[intersemestral]["credits"]
     
-    # Calcular costo
     semester_cost = 5000000 if is_half_time else 10000000
     if total_credits > credits_per_semester[effective_semester]:
         extra_credits_used = total_credits - credits_per_semester[effective_semester]
@@ -92,14 +87,12 @@ def recommend_subjects(G, approved_subjects, current_semester, credits_per_semes
 
 def estimate_remaining_semesters(G, approved_subjects, total_credits_required, credits_per_semester, is_half_time=False):
     remaining_credits = total_credits_required - sum(G.nodes[c]["credits"] for c in approved_subjects)
-    # Precompute average credits across semesters 1–10
     avg_credits_per_semester = sum(credits_per_semester[s] for s in range(1, 11)) / 10
     avg_credits_per_semester = avg_credits_per_semester // 2 - 1 if is_half_time else avg_credits_per_semester
     return max(1, (remaining_credits + avg_credits_per_semester - 1) // avg_credits_per_semester)
 
 @st.cache_data
 def generate_full_plan(_G, approved_subjects, program, _credits_per_semester, _calculate_semester, semester_options):
-    # Convert unhashable inputs to hashable types
     approved_subjects = tuple(approved_subjects)
     semester_options = {k: tuple(v.items()) for k, v in semester_options.items()}
     
@@ -116,42 +109,38 @@ def generate_full_plan(_G, approved_subjects, program, _credits_per_semester, _c
         best_config = None
         intersemestral_options = get_intersemestral_options(_G, tuple(current_approved))
         
-        # Seleccionar el mejor intersemestral por costo-beneficio
         best_intersemestral = None
         if intersemestral_options:
             best_intersemestral = max(intersemestral_options, key=lambda s: _G.nodes[s]["credits"] / 1500000, default=None)
         
-        # Evaluar configuraciones mínimas
+        # Evaluar solo 4 configuraciones: half-time/completa, con/sin intersemestral
         for is_half_time in [False, True]:
-            max_extra_credits = 1 if is_half_time else 1  # Reducir a 0-1 créditos extra
-            for extra_credits in range(max_extra_credits + 1):
-                for intersemestral in [None, best_intersemestral] if best_intersemestral else [None]:
-                    subjects, credits, intersemestral_credits, semester_cost, extra_credits_used = recommend_subjects(
-                        _G, current_approved, current_semester, _credits_per_semester, is_half_time, extra_credits, intersemestral
-                    )
-                    temp_approved = current_approved + subjects
-                    if intersemestral:
-                        temp_approved.append(intersemestral)
-                    remaining_semesters = estimate_remaining_semesters(
-                        _G, temp_approved, total_credits_required, _credits_per_semester, is_half_time
-                    )
-                    projected_cost = semester_cost + remaining_semesters * (5000000 if is_half_time else 10000000)
-                    if projected_cost < best_cost:
-                        best_cost = projected_cost
-                        best_config = {
-                            "subjects": subjects,
-                            "credits": credits,
-                            "intersemestral_credits": intersemestral_credits,
-                            "semester_cost": semester_cost,
-                            "is_half_time": is_half_time,
-                            "extra_credits": extra_credits_used,
-                            "intersemestral": intersemestral
-                        }
+            for intersemestral in [None, best_intersemestral] if best_intersemestral else [None]:
+                extra_credits = 0  # Simplificar: sin créditos extra por defecto
+                subjects, credits, intersemestral_credits, semester_cost, extra_credits_used = recommend_subjects(
+                    _G, current_approved, current_semester, _credits_per_semester, is_half_time, extra_credits, intersemestral
+                )
+                temp_approved = current_approved + subjects
+                if intersemestral:
+                    temp_approved.append(intersemestral)
+                remaining_semesters = estimate_remaining_semesters(
+                    _G, temp_approved, total_credits_required, _credits_per_semester, is_half_time
+                )
+                projected_cost = semester_cost + remaining_semesters * (5000000 if is_half_time else 10000000)
+                if projected_cost < best_cost:
+                    best_cost = projected_cost
+                    best_config = {
+                        "subjects": subjects,
+                        "credits": credits,
+                        "intersemestral_credits": intersemestral_credits,
+                        "semester_cost": semester_cost,
+                        "is_half_time": is_half_time,
+                        "extra_credits": extra_credits_used,
+                        "intersemestral": intersemestral
+                    }
         
-        # Track semester repetitions
         semester_counts[current_semester] = semester_counts.get(current_semester, 0) + 1
         
-        # Aplicar la mejor configuración
         plan.append({
             "semester": current_semester,
             "repetition": semester_counts[current_semester],
@@ -170,7 +159,6 @@ def generate_full_plan(_G, approved_subjects, program, _credits_per_semester, _c
             current_approved.append(best_config["intersemestral"])
         current_semester = _calculate_semester(total_credits_approved)
         
-        # Actualizar opciones del usuario si existen
         if current_semester in semester_options:
             semester_options[current_semester]["is_half_time"] = best_config["is_half_time"]
             semester_options[current_semester]["extra_credits"] = best_config["extra_credits"]
