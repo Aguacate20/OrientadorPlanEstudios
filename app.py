@@ -4,6 +4,11 @@
 import streamlit as st
 import networkx as nx
 from courses_data import fisioterapia_courses, enfermeria_courses, credits_per_semester_fisioterapia, credits_per_semester_enfermeria, calculate_semester_fisioterapia, calculate_semester_enfermeria
+try:
+    from courses_data import fisioterapia_courses_by_semester, enfermeria_courses_by_semester
+except ImportError:
+    fisioterapia_courses_by_semester = None
+    enfermeria_courses_by_semester = None
 from curriculum import build_curriculum_graph, generate_full_plan, get_intersemestral_options
 
 # Inicializar estado de sesión
@@ -21,32 +26,33 @@ if "previous_approved_subjects" not in st.session_state:
 st.title("Orientador de Plan de Estudios")
 
 # Selección del programa
-program = st.selectbox("Seleccione su programa", ["Fisioterapia", "Enfermería"])
-courses = fisioterapia_courses if program == "Fisioterapia" else enfermeria_courses
-credits_per_semester = credits_per_semester_fisioterapia if program == "Fisioterapia" else credits_per_semester_enfermeria
-calculate_semester = calculate_semester_fisioterapia if program == "Fisioterapia" else calculate_semester_enfermeria
+with st.spinner("Cargando datos iniciales..."):
+    program = st.selectbox("Seleccione su programa", ["Fisioterapia", "Enfermería"])
+    courses = fisioterapia_courses if program == "Fisioterapia" else enfermeria_courses
+    credits_per_semester = credits_per_semester_fisioterapia if program == "Fisioterapia" else credits_per_semester_enfermeria
+    calculate_semester = calculate_semester_fisioterapia if program == "Fisioterapia" else calculate_semester_enfermeria
+    courses_by_semester = fisioterapia_courses_by_semester if program == "Fisioterapia" else enfermeria_courses_by_semester
 
-# Construir grafo
-G = build_curriculum_graph(courses)
+    # Construir grafo
+    G = build_curriculum_graph(courses)
 
 # Selección de asignaturas aprobadas
 st.subheader("Seleccione las asignaturas aprobadas")
 approved_subjects = []
 for semester in range(1, 11):
-    semester_courses = [course for course, info in courses.items() if info["semester"] == semester]
+    if courses_by_semester:
+        semester_courses = courses_by_semester.get(semester, [])
+    else:
+        semester_courses = [course for course, info in courses.items() if info["semester"] == semester]
     if semester_courses:
         with st.expander(f"Semestre {semester}"):
-            for course in semester_courses:
-                key = f"course_{semester}_{course}"
-                if key not in st.session_state:
-                    st.session_state[key] = course in st.session_state.approved_subjects
-                selected = st.checkbox(
-                    course,
-                    value=st.session_state[key],
-                    key=key
-                )
-                if selected:
-                    approved_subjects.append(course)
+            selected_courses = st.multiselect(
+                f"Asignaturas aprobadas en semestre {semester}",
+                options=semester_courses,
+                default=[course for course in semester_courses if course in st.session_state.approved_subjects],
+                key=f"multiselect_{semester}"
+            )
+            approved_subjects.extend(selected_courses)
 
 # Actualizar asignaturas aprobadas en el estado
 st.session_state.approved_subjects = approved_subjects
@@ -58,7 +64,6 @@ st.write(f"**Semestre actual**: {current_semester} (Créditos aprobados: {total_
 
 # Función para generar o actualizar el plan
 def update_plan():
-    # Inicializar opciones por semestre si no existen
     if not st.session_state.semester_options or not st.session_state.semester_options.get(current_semester):
         st.session_state.semester_options = {}
         for semester in range(current_semester, 11):
@@ -68,7 +73,6 @@ def update_plan():
                 "intersemestral": None
             }
     
-    # Generar el plan con un spinner
     with st.spinner("Generando plan de estudios recomendado..."):
         st.session_state.plan, st.session_state.total_cost = generate_full_plan(
             G, st.session_state.approved_subjects, program, credits_per_semester, calculate_semester, st.session_state.semester_options
@@ -88,7 +92,6 @@ if st.session_state.plan:
             semester = semester_plan["semester"]
             effective_semester = min(semester, 10)
             
-            # Configuración del semestre
             is_half_time = st.checkbox(
                 f"Media matrícula (máximo {credits_per_semester[effective_semester] // 2 - 1} créditos, costo $5,000,000)",
                 value=st.session_state.semester_options[semester]["is_half_time"],
@@ -111,14 +114,12 @@ if st.session_state.plan:
                 on_change=update_plan
             )
             
-            # Actualizar opciones en el estado
             st.session_state.semester_options[semester] = {
                 "is_half_time": is_half_time,
                 "extra_credits": extra_credits,
                 "intersemestral": intersemestral if intersemestral != "Ninguno" else None
             }
             
-            # Mostrar detalles del semestre
             st.write(f"**Créditos**: {semester_plan['credits']} de {credits_per_semester[effective_semester] if not semester_plan['is_half_time'] else credits_per_semester[effective_semester] // 2 - 1} disponibles (Intersemestral: {semester_plan['intersemestral_credits']} créditos)")
             st.write(f"**Costo**: ${semester_plan['cost']:,.0f}")
             if semester_plan["is_half_time"]:
