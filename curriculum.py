@@ -56,11 +56,15 @@ def get_intersemestral_options(G_tuple, approved_subjects):
                 intersemestral.append(course)
     return intersemestral[:2]
 
-def recommend_subjects(G_tuple, approved_subjects, current_semester, credits_per_semester, is_half_time=False, extra_credits=0, intersemestral=None):
+def recommend_subjects(G_tuple, approved_subjects, current_semester, credits_per_semester, is_half_time=False, extra_credits=0):
     G, prereq_cache = G_tuple
-    # Asegurar que approved_subjects contenga solo cadenas
-    approved_subjects = [str(s) for s in approved_subjects if isinstance(s, str)]
-    available_subjects = list(get_available_subjects(G_tuple, tuple(approved_subjects), current_semester))
+    # Depuración
+    print(f"approved_subjects recibido: {approved_subjects}")
+    # Filtrar solo cadenas
+    approved_subjects = [s for s in approved_subjects if isinstance(s, str)]
+    print(f"approved_subjects filtrado: {approved_subjects}")
+    # Convertir a tupla y obtener asignaturas disponibles
+    available_subjects = list(get_available_subjects(G_tuple, tuple(approved_subjects)))
     semester_key = min(current_semester, 10)
     credit_limit = credits_per_semester[semester_key] // 2 - 1 if is_half_time else credits_per_semester[semester_key]
     credit_limit = min(credit_limit + extra_credits, 25)
