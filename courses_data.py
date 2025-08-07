@@ -111,6 +111,17 @@ enfermeria_courses = {
     "Gestión del Cuidado II": {"credits": 13, "semester": 10, "prerequisites": ["Gestión del Cuidado I"]}
 }
 
+# Precomputar asignaturas por semestre
+fisioterapia_courses_by_semester = {}
+enfermeria_courses_by_semester = {}
+for semester in range(1, 11):
+    fisioterapia_courses_by_semester[semester] = [
+        course for course, info in fisioterapia_courses.items() if info["semester"] == semester
+    ]
+    enfermeria_courses_by_semester[semester] = [
+        course for course, info in enfermeria_courses.items() if info["semester"] == semester
+    ]
+
 credits_per_semester_fisioterapia = {1: 19, 2: 18, 3: 19, 4: 18, 5: 18, 6: 19, 7: 22, 8: 17, 9: 15, 10: 15}
 credits_per_semester_enfermeria = {1: 18, 2: 20, 3: 21, 4: 22, 5: 21, 6: 19, 7: 20, 8: 16, 9: 17, 10: 15}
 
