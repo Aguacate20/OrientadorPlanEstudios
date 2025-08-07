@@ -33,26 +33,26 @@ with st.spinner("Cargando datos iniciales..."):
     calculate_semester = calculate_semester_fisioterapia if program == "Fisioterapia" else calculate_semester_enfermeria
     courses_by_semester = fisioterapia_courses_by_semester if program == "Fisioterapia" else enfermeria_courses_by_semester
 
-    # Construir grafo
     G = build_curriculum_graph(courses)
 
 # Selección de asignaturas aprobadas
 st.subheader("Seleccione las asignaturas aprobadas")
 approved_subjects = []
+options = []
 for semester in range(1, 11):
     if courses_by_semester:
         semester_courses = courses_by_semester.get(semester, [])
     else:
         semester_courses = [course for course, info in courses.items() if info["semester"] == semester]
-    if semester_courses:
-        with st.expander(f"Semestre {semester}"):
-            selected_courses = st.multiselect(
-                f"Asignaturas aprobadas en semestre {semester}",
-                options=semester_courses,
-                default=[course for course in semester_courses if course in st.session_state.approved_subjects],
-                key=f"multiselect_{semester}"
-            )
-            approved_subjects.extend(selected_courses)
+    options.extend([f"Semestre {semester}: {course}" for course in semester_courses])
+
+approved_subjects = st.multiselect(
+    "Asignaturas aprobadas",
+    options=options,
+    default=[f"Semestre {courses[course]['semester']}: {course}" for course in st.session_state.approved_subjects],
+    key="approved_subjects_multiselect"
+)
+approved_subjects = [s.split(": ")[1] for s in approved_subjects]
 
 # Actualizar asignaturas aprobadas en el estado
 st.session_state.approved_subjects = approved_subjects
