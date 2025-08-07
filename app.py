@@ -59,13 +59,17 @@ st.write(f"**Semestre actual**: {current_semester} (Créditos aprobados: {total_
 
 # Función para generar o actualizar el plan
 @st.cache_data
-def update_plan(_G, _approved_subjects, _program, _credits_per_semester, _calculate_semester, _semester_options):
-    G, prereq_cache = _G
+def update_plan(_G_tuple, _approved_subjects, _program, _credits_per_semester, _calculate_semester, _semester_options):
+    G, prereq_cache = _G_tuple
+    # Create a copy of semester_options to avoid mutating cached input
+    semester_options_copy = {k: v.copy() for k, v in _semester_options.items()}
+    current_semester = min(_calculate_semester(sum(G.nodes[course]["credits"] for course in _approved_subjects)), 10)
+    
     # Inicializar opciones por semestre si no existen
-    if not _semester_options or not _semester_options.get(current_semester):
-        _semester_options = {}
+    if not semester_options_copy or not semester_options_copy.get(current_semester):
+        semester_options_copy = {}
         for semester in range(current_semester, 11):
-            _semester_options[semester] = {
+            semester_options_copy[semester] = {
                 "is_half_time": False,
                 "extra_credits": 0,
                 "intersemestral": None
@@ -73,9 +77,9 @@ def update_plan(_G, _approved_subjects, _program, _credits_per_semester, _calcul
     
     # Generar el plan
     plan, total_cost = generate_full_plan(
-        (G, prereq_cache), _approved_subjects, _program, _credits_per_semester, _calculate_semester, _semester_options
+        (G, prereq_cache), _approved_subjects, _program, _credits_per_semester, _calculate_semester, semester_options_copy
     )
-    return plan, total_cost, _semester_options
+    return plan, total_cost, semester_options_copy
 
 # Actualizar plan solo si se presionó el botón y las asignaturas cambiaron
 if st.session_state.update_triggered and sorted(st.session_state.approved_subjects) != sorted(st.session_state.previous_approved_subjects):
