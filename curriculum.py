@@ -1,6 +1,3 @@
-# curriculum.py
-# Lógica para construir el grafo y generar recomendaciones
-
 import networkx as nx
 from courses_data import fisioterapia_courses, enfermeria_courses, credits_per_semester_fisioterapia, credits_per_semester_enfermeria, calculate_semester_fisioterapia, calculate_semester_enfermeria
 
@@ -46,7 +43,9 @@ def get_intersemestral_options(G, approved_subjects):
 
 def recommend_subjects(G, approved_subjects, current_semester, credits_per_semester, is_half_time=False, extra_credits=0, intersemestral=None):
     available_subjects = get_available_subjects(G, approved_subjects, current_semester)
-    credit_limit = credits_per_semester[current_semester] // 2 - 1 if is_half_time else credits_per_semester[current_semester]
+    # Cap current_semester at 10 for credit limit lookup
+    semester_key = min(current_semester, 10)
+    credit_limit = credits_per_semester[semester_key] // 2 - 1 if is_half_time else credits_per_semester[semester_key]
     credit_limit = min(credit_limit + extra_credits, 25)
     if is_half_time and extra_credits > 1:
         extra_credits = 1
@@ -78,8 +77,8 @@ def recommend_subjects(G, approved_subjects, current_semester, credits_per_semes
     
     # Calcular costo
     semester_cost = 5000000 if is_half_time else 10000000
-    if total_credits > credits_per_semester[current_semester]:
-        extra_credits_used = total_credits - credits_per_semester[current_semester]
+    if total_credits > credits_per_semester[semester_key]:
+        extra_credits_used = total_credits - credits_per_semester[semester_key]
         semester_cost += extra_credits_used * 800000
     if intersemestral:
         semester_cost += 1500000
@@ -88,7 +87,9 @@ def recommend_subjects(G, approved_subjects, current_semester, credits_per_semes
 
 def estimate_remaining_semesters(G, approved_subjects, total_credits_required, credits_per_semester, current_semester, is_half_time=False):
     remaining_credits = total_credits_required - sum(G.nodes[c]["credits"] for c in approved_subjects)
-    avg_credits_per_semester = credits_per_semester[current_semester] // 2 - 1 if is_half_time else credits_per_semester[current_semester]
+    # Cap current_semester at 10 for credit limit lookup
+    semester_key = min(current_semester, 10)
+    avg_credits_per_semester = credits_per_semester[semester_key] // 2 - 1 if is_half_time else credits_per_semester[semester_key]
     return max(1, (remaining_credits + avg_credits_per_semester - 1) // avg_credits_per_semester)
 
 def generate_full_plan(G, approved_subjects, program, credits_per_semester, calculate_semester, semester_options):
@@ -98,6 +99,7 @@ def generate_full_plan(G, approved_subjects, program, credits_per_semester, calc
     current_semester = calculate_semester(total_credits_approved)
     total_credits_required = 180 if program == "Fisioterapia" else 189
     total_cost = 0
+    semester_counter = current_semester  # Track displayed semester number
     
     while total_credits_approved < total_credits_required:
         best_cost = float('inf')
@@ -134,7 +136,7 @@ def generate_full_plan(G, approved_subjects, program, credits_per_semester, calc
         
         # Aplicar la mejor configuración
         plan.append({
-            "semester": current_semester,
+            "semester": semester_counter,  # Use displayed semester number
             "subjects": best_config["subjects"],
             "credits": best_config["credits"],
             "intersemestral_credits": best_config["intersemestral_credits"],
@@ -148,12 +150,10 @@ def generate_full_plan(G, approved_subjects, program, credits_per_semester, calc
         total_cost += best_config["semester_cost"]
         if best_config["intersemestral"]:
             current_approved.append(best_config["intersemestral"])
+        # Recalculate current_semester based on credits
         current_semester = calculate_semester(total_credits_approved)
-        
-        # Actualizar opciones del usuario si existen
-        if current_semester in semester_options:
-            semester_options[current_semester]["is_half_time"] = best_config["is_half_time"]
-            semester_options[current_semester]["extra_credits"] = best_config["extra_credits"]
-            semester_options[current_semester]["intersemestral"] = best_config["intersemestral"]
+        # Increment semester_counter only if not repeating due to half-time
+        if not best_config["is_half_time"] or total_credits_approved >= sum(credits_per_semester[i] for i in range(1, min(current_semester + 1, 11))):
+            semester_counter += 1
     
     return plan, total_cost
