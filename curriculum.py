@@ -4,119 +4,241 @@
 import networkx as nx
 import streamlit as st
 import gc
-from courses_data import fisioterapia_courses, enfermeria_courses, credits_per_semester_fisioterapia, credits_per_semester_enfermeria, calculate_semester_fisioterapia, calculate_semester_enfermeria
+import math
+from typing import Iterable, List, Tuple, Dict, Any
+
+from courses_data import (
+    fisioterapia_courses,
+    enfermeria_courses,
+    credits_per_semester_fisioterapia,
+    credits_per_semester_enfermeria,
+    calculate_semester_fisioterapia,
+    calculate_semester_enfermeria,
+)
+
 
 @st.cache_resource
-def build_curriculum_graph(_courses):
+def build_curriculum_graph(_courses: Dict[str, Dict[str, Any]]) -> nx.DiGraph:
+    """
+    Construye un grafo dirigido con nodos = materias y aristas = prerequisitos/corequisitos.
+    """
     G = nx.DiGraph()
     for course, info in _courses.items():
-        G.add_node(course, credits=info["credits"], semester=info["semester"])
+        credits = info.get("credits", 0)
+        semester = info.get("semester", 0)
+        G.add_node(course, credits=credits, semester=semester)
         for prereq in info.get("prerequisites", []):
-            G.add_edge(prereq, course)
+            # prereq -> course
+            G.add_edge(prereq, course, type="prerequisite")
         for coreq in info.get("corerequisites", []):
+            # coreq -> course, marcado como corequisite
             G.add_edge(coreq, course, type="corequisite")
     return G
 
+
+def _normalize_approved(approved_subjects: Iterable[str]) -> Tuple[str, ...]:
+    """Convierte a tupla inmutable para evitar problemas con caché y comparar más fácil."""
+    if approved_subjects is None:
+        return tuple()
+    if isinstance(approved_subjects, tuple):
+        return approved_subjects
+    return tuple(approved_subjects)
+
+
 @st.cache_data
-def get_available_subjects(_G, approved_subjects, current_semester):
-    available = []
-    mandatory = [course for course in _G.nodes if "Inglés" in course or "Core Currículum" in course]
-    
+def get_available_subjects(_G: nx.DiGraph, approved_subjects: Tuple[str, ...], current_semester: int) -> List[str]:
+    """
+    Devuelve la lista de asignaturas disponibles (cumplen prereqs y coreqs) hasta el semestre actual+1.
+    Se asume approved_subjects como tupla (hashable) para usar caché.
+    """
+    approved = set(approved_subjects)
+    available: List[str] = []
+
+    # Identificadores "mandatorios"/prioritarios basados en nombres
+    # Buscamos por substring para evitar inconsistencias menores en nombres
+    def is_mandatory_name(name: str) -> bool:
+        return ("Inglés" in name) or ("Core Currículum" in name) or ("Core Curriculum" in name)
+
     for course in _G.nodes:
-        if course in approved_subjects:
+        if course in approved:
             continue
+        # prereqs que no son corequisitos
         prereqs = [p for p in _G.predecessors(course) if _G[p][course].get("type") != "corequisite"]
-        if all(prereq in approved_subjects for prereq in prereqs):
-            coreqs = [c for c in _G.predecessors(course) if _G[c][course].get("type") == "corequisite"]
-            if all(coreq in approved_subjects or coreq in available for coreq in coreqs):
-                if course in mandatory and _G.nodes[course]["semester"] <= current_semester:
-                    available.insert(0, course)
-                elif _G.nodes[course]["semester"] <= current_semester + 1:
-                    available.append(course)
+        if not all(pr in approved for pr in prereqs):
+            continue
+        # corequisitos: pueden ser tomados simultáneamente, permitimos si están ya aprobados o previstos en "available"
+        coreqs = [p for p in _G.predecessors(course) if _G[p][course].get("type") == "corequisite"]
+        if not all((c in approved) or (c in available) for c in coreqs):
+            continue
+        # filtro por semestre (permitimos hasta current_semester + 1)
+        course_sem = _G.nodes[course].get("semester", 99)
+        if is_mandatory_name(course) and course_sem <= current_semester:
+            available.insert(0, course)
+        elif course_sem <= current_semester + 1:
+            available.append(course)
     return available
 
+
 @st.cache_data
-def get_intersemestral_options(_G, approved_subjects):
+def get_intersemestral_options(_G: nx.DiGraph, approved_subjects: Tuple[str, ...]) -> List[str]:
+    """
+    Devuelve una lista de materias susceptibles de ser cursadas en intersemestral
+    (por ahora: materias tipo Inglés y Precálculo) si se cumplen prerequisitos.
+    """
+    approved = set(approved_subjects)
     intersemestral = []
     for course in _G.nodes:
-        if course.startswith("Inglés") or course == "Precálculo":
-            if course in approved_subjects:
-                continue
-            prereqs = list(_G.predecessors(course))
-            if all(prereq in approved_subjects for prereq in prereqs):
-                intersemestral.append(course)
+        name_ok = course.startswith("Inglés") or course == "Precálculo" or "Inglés" in course
+        if not name_ok:
+            continue
+        if course in approved:
+            continue
+        prereqs = list(_G.predecessors(course))
+        if all(pr in approved for pr in prereqs):
+            intersemestral.append(course)
     return intersemestral
 
-def recommend_subjects(G, approved_subjects, current_semester, credits_per_semester, is_half_time=False, intersemestral=None):
-    available_subjects = get_available_subjects(G, tuple(approved_subjects), current_semester)
+
+def recommend_subjects(
+    G: nx.DiGraph,
+    approved_subjects: Iterable[str],
+    current_semester: int,
+    credits_per_semester: Dict[int, int],
+    is_half_time: bool = False,
+    intersemestral: str = None,
+) -> Tuple[List[str], int, int, int]:
+    """
+    Recomienda materias para un semestre dado:
+    - Devuelve (selected_subjects, total_credits, intersemestral_credits, semester_cost)
+    """
+    approved_tuple = _normalize_approved(approved_subjects)
+    available_subjects = get_available_subjects(G, approved_tuple, current_semester)
     effective_semester = min(current_semester, 10)
-    credit_limit = credits_per_semester[effective_semester] // 2 - 1 if is_half_time else credits_per_semester[effective_semester]
-    
-    mandatory = [s for s in available_subjects if "Inglés" in s or "Core Currículum" in s]
+    # límite de créditos
+    credit_limit = credits_per_semester.get(effective_semester, 0)
+    if is_half_time:
+        credit_limit = max(0, credit_limit // 2 - 1)
+
+    # Priorizar "mandatorias" (Inglés / Core Currículum) y luego por créditos desc + semestre asc
+    mandatory = [s for s in available_subjects if ("Inglés" in s) or ("Core Currículum" in s) or ("Core Curriculum" in s)]
     optional = [s for s in available_subjects if s not in mandatory]
-    
-    optional.sort(key=lambda s: (-G.nodes[s]["credits"], G.nodes[s]["semester"]))
-    
-    selected_subjects = mandatory.copy()
-    total_credits = sum(G.nodes[s]["credits"] for s in mandatory)
-    
-    for subject in optional:
-        subject_credits = G.nodes[subject]["credits"]
-        if total_credits + subject_credits <= credit_limit:
-            selected_subjects.append(subject)
-            total_credits += subject_credits
-    
+    optional.sort(key=lambda s: (-G.nodes[s].get("credits", 0), G.nodes[s].get("semester", 99)))
+
+    selected_subjects = []
+    total_credits = 0
+    # añadir mandatorias primero si caben
+    for s in mandatory:
+        c = G.nodes[s].get("credits", 0)
+        if total_credits + c <= credit_limit:
+            selected_subjects.append(s)
+            total_credits += c
+
+    # luego opcionales
+    for s in optional:
+        c = G.nodes[s].get("credits", 0)
+        if total_credits + c <= credit_limit:
+            selected_subjects.append(s)
+            total_credits += c
+
+    # intersemestral (si el usuario lo seleccionó)
     intersemestral_credits = 0
     if intersemestral:
-        selected_subjects.append(intersemestral)
-        intersemestral_credits = G.nodes[intersemestral]["credits"]
-    
+        if intersemestral not in selected_subjects and intersemestral in G.nodes:
+            selected_subjects.append(intersemestral)
+            intersemestral_credits = G.nodes[intersemestral].get("credits", 0)
+
+    # coste por semestre
     semester_cost = 5000000 if is_half_time else 10000000
     if intersemestral:
         semester_cost += 1500000
-    
+
     return selected_subjects, total_credits, intersemestral_credits, semester_cost
 
-def estimate_remaining_semesters(G, approved_subjects, total_credits_required, credits_per_semester, is_half_time=False):
-    remaining_credits = total_credits_required - sum(G.nodes[c]["credits"] for c in approved_subjects)
-    avg_credits_per_semester = sum(credits_per_semester[s] for s in range(1, 11)) / 10
-    avg_credits_per_semester = avg_credits_per_semester // 2 - 1 if is_half_time else avg_credits_per_semester
-    return max(1, (remaining_credits + avg_credits_per_semester - 1) // avg_credits_per_semester)
 
-@st.cache_data
-def generate_full_plan(_G, approved_subjects, program, _credits_per_semester, _calculate_semester, semester_options):
-    approved_subjects = tuple(approved_subjects)
-    semester_options = {k: tuple(v.items()) for k, v in semester_options.items()}
-    
+def estimate_remaining_semesters(
+    G: nx.DiGraph,
+    approved_subjects: Iterable[str],
+    total_credits_required: int,
+    credits_per_semester: Dict[int, int],
+    is_half_time: bool = False,
+) -> int:
+    """
+    Estima cuántos semestres faltan bajo un promedio de créditos por semestre.
+    """
+    approved_sum = sum(G.nodes[c]["credits"] for c in approved_subjects if c in G.nodes)
+    remaining_credits = max(0, total_credits_required - approved_sum)
+    avg_credits_per_sem = sum(credits_per_semester.get(s, 0) for s in range(1, 11)) / 10.0
+    if is_half_time:
+        avg_credits_per_sem = max(1.0, avg_credits_per_sem / 2.0 - 1.0)
+    # evitar división por cero
+    if avg_credits_per_sem <= 0:
+        return max(1, remaining_credits)
+    return max(1, math.ceil(remaining_credits / avg_credits_per_sem))
+
+
+def _deepcopy_semester_options(semester_options: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """Copia defensiva para no mutar la estructura pasada desde Streamlit (por seguridad)."""
+    return {k: dict(v) for k, v in semester_options.items()}
+
+
+def generate_full_plan(
+    _G: nx.DiGraph,
+    approved_subjects: Iterable[str],
+    program: str,
+    _credits_per_semester: Dict[int, int],
+    _calculate_semester,
+    semester_options: Dict[int, Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Genera el plan completo (iterativo) hasta completar los créditos requeridos.
+    NOTA: no cacheado porque depende de estado mutable y opciones por semestre.
+    """
+    approved = list(approved_subjects) if approved_subjects is not None else []
+    semester_options_local = _deepcopy_semester_options(semester_options or {})
+
     plan = []
-    current_approved = list(approved_subjects)
-    total_credits_approved = sum(_G.nodes[course]["credits"] for course in current_approved)
+    total_credits_approved = sum(_G.nodes[c]["credits"] for c in approved if c in _G.nodes)
     current_semester = _calculate_semester(total_credits_approved)
     total_credits_required = 180 if program == "Fisioterapia" else 189
     total_cost = 0
     semester_counts = {}
-    
+
+    # guard clause: si ya cumplió
+    if total_credits_approved >= total_credits_required:
+        return plan, total_cost
+
+    # ciclo principal: añadir semestres hasta completar
     while total_credits_approved < total_credits_required:
-        best_cost = float('inf')
+        best_cost = float("inf")
         best_config = None
-        intersemestral_options = get_intersemestral_options(_G, tuple(current_approved))
-        
+
+        intersemestral_options = get_intersemestral_options(_G, tuple(approved))
+
+        # elegir mejor intersemestral (por coste/beneficio simple) si hay
         best_intersemestral = None
         if intersemestral_options:
-            best_intersemestral = max(intersemestral_options, key=lambda s: _G.nodes[s]["credits"] / 1500000, default=None)
-        
+            # heurística: mayor créditos por coste fijo
+            best_intersemestral = max(intersemestral_options, key=lambda s: _G.nodes[s].get("credits", 0) / 1500000.0)
+
+        # probar configuraciones media matrícula si la opción existe
         for is_half_time in [False, True]:
-            intersemestral = best_intersemestral if is_half_time and best_intersemestral else None
+            # probar con la intersemestral heurística (si aplica)
+            intersemestral_candidate = best_intersemestral if best_intersemestral else None
+
             subjects, credits, intersemestral_credits, semester_cost = recommend_subjects(
-                _G, current_approved, current_semester, _credits_per_semester, is_half_time, intersemestral
+                _G, tuple(approved), current_semester, _credits_per_semester, is_half_time, intersemestral_candidate
             )
-            temp_approved = current_approved + subjects
-            if intersemestral:
-                temp_approved.append(intersemestral)
+
+            # material temporal de aprobadas si tomara esas materias
+            temp_approved = approved + list(subjects)
+            if intersemestral_candidate:
+                temp_approved.append(intersemestral_candidate)
+
             remaining_semesters = estimate_remaining_semesters(
                 _G, temp_approved, total_credits_required, _credits_per_semester, is_half_time
             )
             projected_cost = semester_cost + remaining_semesters * (5000000 if is_half_time else 10000000)
+
             if projected_cost < best_cost:
                 best_cost = projected_cost
                 best_config = {
@@ -126,34 +248,42 @@ def generate_full_plan(_G, approved_subjects, program, _credits_per_semester, _c
                     "semester_cost": semester_cost,
                     "is_half_time": is_half_time,
                     "extra_credits": 0,
-                    "intersemestral": intersemestral
+                    "intersemestral": intersemestral_candidate,
                 }
-        
+
+        # registrar repetición de semestre
         semester_counts[current_semester] = semester_counts.get(current_semester, 0) + 1
-        
-        plan.append({
-            "semester": current_semester,
-            "repetition": semester_counts[current_semester],
-            "subjects": best_config["subjects"],
-            "credits": best_config["credits"],
-            "intersemestral_credits": best_config["intersemestral_credits"],
-            "is_half_time": best_config["is_half_time"],
-            "extra_credits": best_config["extra_credits"],
-            "intersemestral": best_config["intersemestral"],
-            "cost": best_config["semester_cost"]
-        })
-        current_approved.extend(best_config["subjects"])
+
+        plan.append(
+            {
+                "semester": current_semester,
+                "repetition": semester_counts[current_semester],
+                "subjects": best_config["subjects"],
+                "credits": best_config["credits"],
+                "intersemestral_credits": best_config["intersemestral_credits"],
+                "is_half_time": best_config["is_half_time"],
+                "extra_credits": best_config["extra_credits"],
+                "intersemestral": best_config["intersemestral"],
+                "cost": best_config["semester_cost"],
+            }
+        )
+
+        # actualizar aprobadas y totales
+        approved.extend(best_config["subjects"])
         total_credits_approved += best_config["credits"] + best_config["intersemestral_credits"]
         total_cost += best_config["semester_cost"]
         if best_config["intersemestral"]:
-            current_approved.append(best_config["intersemestral"])
+            approved.append(best_config["intersemestral"])
+
+        # actualizar semestre actual
         current_semester = _calculate_semester(total_credits_approved)
-        
-        if current_semester in semester_options:
-            semester_options[current_semester]["is_half_time"] = best_config["is_half_time"]
-            semester_options[current_semester]["extra_credits"] = best_config["extra_credits"]
-            semester_options[current_semester]["intersemestral"] = best_config["intersemestral"]
-        
-        gc.collect()  # Liberar memoria
-    
+
+        # si hay opciones por semestre pasadas desde UI, actualizar localmente (no mutar la original)
+        if current_semester in semester_options_local:
+            semester_options_local[current_semester]["is_half_time"] = best_config["is_half_time"]
+            semester_options_local[current_semester]["extra_credits"] = best_config["extra_credits"]
+            semester_options_local[current_semester]["intersemestral"] = best_config["intersemestral"]
+
+        gc.collect()
+
     return plan, total_cost
