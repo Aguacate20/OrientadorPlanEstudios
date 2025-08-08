@@ -1,8 +1,10 @@
 # app.py
 # Interfaz de Streamlit para el orientador de plan de estudios (con checkboxes + botón de generar)
+# Incluye medición del tiempo de cálculo del plan.
 
 import streamlit as st
 import networkx as nx
+import time
 from courses_data import (
     fisioterapia_courses,
     enfermeria_courses,
@@ -39,6 +41,8 @@ if "previous_approved_subjects" not in st.session_state:
     st.session_state.previous_approved_subjects = []
 if "last_program" not in st.session_state:
     st.session_state.last_program = None
+if "last_plan_time" not in st.session_state:
+    st.session_state.last_plan_time = None  # segundos
 
 st.title("Orientador de Plan de Estudios")
 
@@ -74,6 +78,7 @@ elif st.session_state.last_program != program:
     st.session_state.approved_subjects = []
     st.session_state.previous_approved_subjects = []
     st.session_state.last_program = program
+    st.session_state.last_plan_time = None
 
 # ---------- Helper: calcular semestre actual desde aprobado en estado ----------
 def _current_semester_from_approved():
@@ -88,7 +93,7 @@ def _current_semester_from_approved():
 current_semester, total_credits_approved = _current_semester_from_approved()
 st.write(f"**Semestre actual (estimado)**: {current_semester} (Créditos aprobados: {total_credits_approved})")
 
-# ---------- Función para generar/actualizar plan ----------
+# ---------- Función para generar/actualizar plan (con medición de tiempo) ----------
 def update_plan():
     # Recalcular semestre actual a partir del estado (por si cambió approved_subjects)
     sem, _ = _current_semester_from_approved()
@@ -99,18 +104,32 @@ def update_plan():
             {"is_half_time": False, "extra_credits": 0, "intersemestral": None},
         )
 
-    # Generar plan con la lógica (esta función puede ser costosa)
-    plan, total_cost = generate_full_plan(
-        G,
-        st.session_state.approved_subjects,
-        program,
-        credits_per_semester,
-        calculate_semester,
-        st.session_state.semester_options,
-    )
+    # Medir tiempo de ejecución del cálculo del plan
+    try:
+        t0 = time.perf_counter()
+        plan, total_cost = generate_full_plan(
+            G,
+            st.session_state.approved_subjects,
+            program,
+            credits_per_semester,
+            calculate_semester,
+            st.session_state.semester_options,
+        )
+        t1 = time.perf_counter()
+        elapsed = t1 - t0
+    except Exception as e:
+        st.error(f"Error al generar el plan: {e}")
+        # No sobrescribimos el plan actual si falla
+        return
+
+    # Guardar resultados y tiempo en session_state
     st.session_state.plan = plan
     st.session_state.total_cost = total_cost
     st.session_state.previous_approved_subjects = st.session_state.approved_subjects.copy()
+    st.session_state.last_plan_time = elapsed
+
+    # Mostrar tiempo en la UI para feedback inmediato
+    st.write(f"⏱️ Tiempo de cálculo del plan: {elapsed:.3f} segundos")
 
 # ---------- Selección de asignaturas aprobadas via FORM (checkboxes) ----------
 st.subheader("Seleccione las asignaturas aprobadas (por semestre)")
@@ -148,6 +167,10 @@ with st.form("approved_form"):
 # ---------- Mostrar plan en pestañas (si existe) ----------
 if st.session_state.plan:
     st.subheader("Plan de estudios recomendado")
+    # Mostrar tiempo de la última generación
+    if st.session_state.last_plan_time is not None:
+        st.info(f"Último cálculo: {st.session_state.last_plan_time:.3f} s")
+
     # Botón para recalcular plan con las opciones actuales (por si el usuario modificó media matrícula/extra/intersemestral)
     if st.button("Recalcular plan con opciones actuales"):
         with st.spinner("Recalculando plan..."):
