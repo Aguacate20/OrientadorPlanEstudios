@@ -9,6 +9,10 @@ import gc
 import math
 from typing import Iterable, List, Tuple, Dict, Any
 import re
+import os
+import shutil
+import subprocess
+import stat
 
 from courses_data import (
     fisioterapia_courses,
@@ -244,6 +248,48 @@ def _sanitize_name(name: str, maxlen: int = 40) -> str:
     # Limitar longitud para evitar nombres excesivamente largos
     return s[:maxlen]
 
+def _find_working_solver(time_limit_seconds: int = 30):
+    """
+    Intentar localizar un solver usable:
+     1. Probar binario incluido en pulp.
+     2. Probar 'cbc' en PATH.
+     3. Probar GLPK en PATH.
+    Devuelve un (solver_name, solver_obj) o (None, None) si no hay solver apto.
+    """
+    # 1) binario incluido por pulp (ruta que viste en el error)
+    try:
+        import pulp
+        bundled = os.path.join(os.path.dirname(pulp.__file__), "solverdir", "cbc", "linux", "i64", "cbc")
+        if os.path.exists(bundled) and os.access(bundled, os.X_OK):
+            return "cbc_bundled", pulp.PULP_CBC_CMD(path=bundled, msg=False, timeLimit=time_limit_seconds)
+        # si existe pero no es ejecutable, intentar poner ejecutable (si se puede)
+        if os.path.exists(bundled) and not os.access(bundled, os.X_OK):
+            try:
+                os.chmod(bundled, os.stat(bundled).st_mode | stat.S_IXUSR)
+                if os.access(bundled, os.X_OK):
+                    return "cbc_bundled", pulp.PULP_CBC_CMD(path=bundled, msg=False, timeLimit=time_limit_seconds)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) cbc en PATH
+    cbc_path = shutil.which("cbc")
+    if cbc_path:
+        try:
+            return "cbc_path", pulp.PULP_CBC_CMD(path=cbc_path, msg=False, timeLimit=time_limit_seconds)
+        except Exception:
+            pass
+
+    # 3) GLPK en PATH
+    glpk_path = shutil.which("glpsol")
+    if glpk_path:
+        try:
+            return "glpk", pulp.GLPK_CMD(path=glpk_path, msg=False, options=[f'--tmlim={time_limit_seconds}'])
+        except Exception:
+            pass
+
+    return None, None
 
 def _milp_generate_plan(
     G: nx.DiGraph,
@@ -375,8 +421,13 @@ def _milp_generate_plan(
     prob += M * 10000 + tie_breaker  # peso grande a M para priorizar minimización del semestre máximo
 
     # Resolver con límite de tiempo
-    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit_seconds)
-    result = prob.solve(solver)
+    solver_name, solver_obj = _find_working_solver(time_limit_seconds)
+    if solver_obj is None:
+        raise RuntimeError("No se encontró un solver externo funcional (CBC/GLPK). Comprueba instalación de coinor-cbc o glpk.")
+    # opcional: si quieres mostrar qué solver se usó
+    # st.info(f"Usando solver: {solver_name}")
+
+    result = prob.solve(solver_obj)
 
     if pulp.LpStatus[result] not in ("Optimal", "Not Solved", "Feasible", "Optimal (within gap)"):
         # Si no encontró solución factible, lanzar excepción para fallback
