@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import stat
+import hashlib
 
 from courses_data import (
     fisioterapia_courses,
@@ -327,16 +328,22 @@ def _milp_generate_plan(
     # Crear problema
     prob = pulp.LpProblem("PlanCurricular", pulp.LpMinimize)
 
-    # Variables x[c,s] = 1 si se toma curso c en semestre s
     x = {}
-    for c in remaining_courses:
+    for idx, c in enumerate(remaining_courses):
         c_sem = G.nodes[c].get("semester", 1)
+        # crear un hash corto y estable por materia para evitar colisiones
+        short_hash = hashlib.md5(c.encode("utf-8")).hexdigest()[:8]
+        safe_base = _sanitize_name(c, maxlen=30)
         for s in semesters:
             # restringimos: no agendar antes del semestre nominal del curso
             if s < c_sem:
                 continue
-            x[(c, s)] = pulp.LpVariable(f"x_{_sanitize_name(c)}_{s}", cat="Binary")
-
+            # nombre único y legible: base + hash + semestre
+            varname = f"x_{safe_base}_{short_hash}_{s}"
+            # Crear la variable binaria con nombre único
+            # (pulp detectará nombres duplicados si existieran; el hash lo evita en la práctica)
+            x[(c, s)] = pulp.LpVariable(varname, cat="Binary")
+    
     # z_s = 1 si hay al menos una materia tomada en semestre s
     z = {s: pulp.LpVariable(f"z_{s}", cat="Binary") for s in semesters}
 
