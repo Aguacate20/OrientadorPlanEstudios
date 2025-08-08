@@ -1,6 +1,7 @@
 # curriculum.py
 # Lógica para construir el grafo y generar recomendaciones
-# Versión optimizada: eliminados cacheos problemáticos y reducidas recomputaciones.
+# Versión con MILP (PuLP) para generar plan óptimo (minimizar makespan)
+# y con fallback heurístico si PuLP no está disponible.
 
 import networkx as nx
 import streamlit as st
@@ -16,6 +17,13 @@ from courses_data import (
     calculate_semester_fisioterapia,
     calculate_semester_enfermeria,
 )
+
+# Intentamos importar pulp; si no está, lo capturamos y usaremos fallback
+try:
+    import pulp
+    PULP_AVAILABLE = True
+except Exception:
+    PULP_AVAILABLE = False
 
 
 @st.cache_resource
@@ -126,9 +134,8 @@ def recommend_subjects(
     available_subjects: List[str] = None,
 ) -> Tuple[List[str], int, int, int]:
     """
-    Recomienda materias para un semestre dado:
-    - Devuelve (selected_subjects, total_credits, intersemestral_credits, semester_cost)
-    Se puede pasar available_subjects para evitar recomputarlo.
+    Heurística greedy local (mantuvimos para fallback y para uso modular).
+    Devuelve (selected_subjects, total_credits, intersemestral_credits, semester_cost)
     """
     approved_tuple = _normalize_approved(approved_subjects)
     if available_subjects is None:
@@ -200,6 +207,197 @@ def _deepcopy_semester_options(semester_options: Dict[int, Dict[str, Any]]) -> D
     return {k: dict(v) for k, v in semester_options.items()}
 
 
+def _build_capacity_by_semester(credits_per_semester: Dict[int, int], semester_options: Dict[int, Dict[str, Any]], semester_range: List[int]) -> Dict[int, int]:
+    """
+    Calcula la capacidad de créditos por semestre teniendo en cuenta semester_options.
+    """
+    capacities = {}
+    for s in semester_range:
+        base = credits_per_semester.get(min(s, 10), 0)
+        opts = semester_options.get(s, {}) if semester_options else {}
+        if opts.get("is_half_time"):
+            cap = max(0, base // 2 - 1)
+        else:
+            cap = base
+        extra = opts.get("extra_credits", 0) if opts else 0
+        cap = max(0, cap + int(extra))
+        capacities[s] = cap
+    return capacities
+
+
+def _milp_generate_plan(
+    G: nx.DiGraph,
+    approved_subjects: Iterable[str],
+    current_semester: int,
+    program: str,
+    credits_per_semester: Dict[int, int],
+    semester_options: Dict[int, Dict[str, Any]],
+    time_limit_seconds: int = 30,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Genera plan usando MILP (PuLP). Minimiza el semestre máximo usado (makespan).
+    Devuelve (plan, total_cost).
+    """
+    if not PULP_AVAILABLE:
+        raise RuntimeError("PuLP no disponible en este entorno.")
+
+    approved = set(approved_subjects or [])
+    remaining_courses = [c for c in G.nodes if c not in approved]
+
+    # Si no quedan materias (o aprobó suficientes créditos), salir rápido
+    approved_credits = sum(G.nodes[c]["credits"] for c in approved if c in G.nodes)
+    total_required = 180 if program == "Fisioterapia" else 189
+    if approved_credits >= total_required:
+        return [], 0
+
+    # Semestres posibles: desde current_semester hasta 10 (permitimos 10)
+    semesters = list(range(current_semester, 11))
+    if len(semesters) == 0:
+        semesters = [current_semester]
+
+    # Capacidades por semestre (considerando semester_options)
+    capacities = _build_capacity_by_semester(credits_per_semester, semester_options or {}, semesters)
+
+    # Crear problema
+    prob = pulp.LpProblem("PlanCurricular", pulp.LpMinimize)
+
+    # Variables x[c,s] = 1 si se toma curso c en semestre s
+    x = {}
+    for c in remaining_courses:
+        c_sem = G.nodes[c].get("semester", 1)
+        for s in semesters:
+            # restringimos: no agendar antes del semestre nominal del curso
+            if s < c_sem:
+                continue
+            x[(c, s)] = pulp.LpVariable(f"x_{_sanitize_name(c)}_{s}", cat="Binary")
+
+    # z_s = 1 si hay al menos una materia tomada en semestre s
+    z = {s: pulp.LpVariable(f"z_{s}", cat="Binary") for s in semesters}
+
+    # M = makespan (entero), límite superior 10
+    M = pulp.LpVariable("M", lowBound=0, upBound=10, cat="Integer")
+
+    # Restricción: si se toma una materia, z_s =1
+    for (c, s), var in x.items():
+        prob += var <= z[s]
+
+    # Relacionar M con z: M >= s * z_s para cada s
+    for s in semesters:
+        prob += M >= s * z[s]
+
+    # Capacidad por semestre (créditos)
+    for s in semesters:
+        lhs = pulp.lpSum(G.nodes[c]["credits"] * x[(c, s)]
+                         for c in remaining_courses if (c, s) in x)
+        prob += lhs <= capacities.get(s, 0)
+
+    # Cada curso puede tomarse a lo sumo una vez
+    for c in remaining_courses:
+        vars_for_c = [x[(c, s)] for s in semesters if (c, s) in x]
+        if vars_for_c:
+            prob += pulp.lpSum(vars_for_c) <= 1
+
+    # Restricción de prerrequisitos: si tomas c en s, sus prereqs deben estar aprobados previamente o tomados en semestre < s
+    for c in remaining_courses:
+        prereqs = [p for p in G.predecessors(c) if G[p][c].get("type") != "corequisite"]
+        if not prereqs:
+            continue
+        for s in semesters:
+            if (c, s) not in x:
+                continue
+            # sum over prereq taken in t <= s-1 OR prereq already approved
+            rhs_terms = []
+            for p in prereqs:
+                if p in approved:
+                    # If prereq already approved, it's satisfied; we can effectively add 1
+                    rhs_terms.append(1)
+                else:
+                    # sum of x[p,t] for t <= s-1
+                    prs = [x[(p, t)] for t in semesters if (p, t) in x and t <= s - 1]
+                    if prs:
+                        rhs_terms.append(pulp.lpSum(prs))
+                    else:
+                        # prereq cannot be satisfied before s (because p can't be scheduled earlier) so force infeasible -> set rhs 0
+                        rhs_terms.append(0)
+            # Build RHS as sum of the terms (if any prereq satisfied gives >= number_of_prereqs)
+            # We ensure: x[c,s] <= min_over_prereqs( satisfied ) but linearize as:
+            # For every prereq pr: x[c,s] <= (1 if pr in approved) + sum_{t<=s-1} x[pr,t]
+            for p in prereqs:
+                if p in approved:
+                    prob += x[(c, s)] <= 1
+                else:
+                    sum_pr = pulp.lpSum(x[(p, t)] for t in semesters if (p, t) in x and t <= s - 1)
+                    # If sum_pr is empty (prereq cannot be scheduled earlier), this constraint will force x[c,s] <= 0
+                    prob += x[(c, s)] <= sum_pr
+
+    # Restricción de corequisitos: si c se toma en s, coreq debe estar aprobado o tomado en t <= s (mismo semestre o antes)
+    for c in remaining_courses:
+        coreqs = [p for p in G.predecessors(c) if G[p][c].get("type") == "corequisite"]
+        if not coreqs:
+            continue
+        for s in semesters:
+            if (c, s) not in x:
+                continue
+            for p in coreqs:
+                if p in approved:
+                    prob += x[(c, s)] <= 1
+                else:
+                    sum_core = pulp.lpSum(x[(p, t)] for t in semesters if (p, t) in x and t <= s)
+                    prob += x[(c, s)] <= sum_core
+
+    # Requerimiento global: alcanzar créditos totales (incluyendo aprobados)
+    lhs_total = approved_credits + pulp.lpSum(G.nodes[c]["credits"] * x[(c, s)]
+                                              for (c, s) in x)
+    prob += lhs_total >= total_required
+
+    # Objetivo: minimizar M (makespan), y como tie-breaker minimizar suma(s * x[c,s])
+    tie_breaker = pulp.lpSum(s * x[(c, s)] for (c, s) in x)
+    prob += M * 10000 + tie_breaker  # peso grande a M para priorizar minimización del semestre máximo
+
+    # Resolver con límite de tiempo
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit_seconds)
+    result = prob.solve(solver)
+
+    if pulp.LpStatus[result] not in ("Optimal", "Not Solved", "Feasible", "Optimal (within gap)"):
+        # Si no encontró solución factible, lanzar excepción para fallback
+        raise RuntimeError(f"Solver status: {pulp.LpStatus[result]}")
+
+    # Extraer solución: por semestre, listar materias
+    plan = []
+    semester_counts = {}
+    total_cost = 0
+    # Para cada semestre s en orden ascendente, recoger las materias donde x=1
+    for s in semesters:
+        subjects = [c for c in remaining_courses if (c, s) in x and pulp.value(x[(c, s)]) >= 0.5]
+        if not subjects:
+            continue
+        credits_s = sum(G.nodes[c]["credits"] for c in subjects)
+        # determinar costos según semester_options (si aplica)
+        opts = semester_options.get(s, {}) if semester_options else {}
+        is_half_time = opts.get("is_half_time", False)
+        inter = opts.get("intersemestral", None)
+        inter_credits = G.nodes[inter]["credits"] if inter in G.nodes else 0 if inter else 0
+        sem_cost = 5000000 if is_half_time else 10000000
+        if inter:
+            sem_cost += 1500000
+
+        semester_counts[s] = semester_counts.get(s, 0) + 1
+        plan.append({
+            "semester": s,
+            "repetition": semester_counts[s],
+            "subjects": subjects,
+            "credits": credits_s,
+            "intersemestral_credits": inter_credits,
+            "is_half_time": is_half_time,
+            "extra_credits": opts.get("extra_credits", 0),
+            "intersemestral": inter,
+            "cost": sem_cost,
+        })
+        total_cost += sem_cost
+
+    return plan, total_cost
+
+
 def generate_full_plan(
     _G: nx.DiGraph,
     approved_subjects: Iterable[str],
@@ -209,98 +407,104 @@ def generate_full_plan(
     semester_options: Dict[int, Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
-    Genera el plan completo (iterativo) hasta completar los créditos requeridos.
-    Optimizado evitando recomputaciones innecesarias.
+    Genera el plan completo:
+    - Intentará resolver el MILP (rápido y óptimo para makespan) si PuLP está disponible.
+    - Si PuLP no está disponible o el MILP falla, cae a una heurística greedy iterativa (fallback).
     """
     approved = list(approved_subjects) if approved_subjects is not None else []
-    semester_options_local = _deepcopy_semester_options(semester_options or {})
-
-    plan = []
     total_credits_approved = sum(_G.nodes[c]["credits"] for c in approved if c in _G.nodes)
     current_semester = _calculate_semester(total_credits_approved)
     total_credits_required = 180 if program == "Fisioterapia" else 189
+
+    # Si ya cumplió, devolver vacío
+    if total_credits_approved >= total_credits_required:
+        return [], 0
+
+    # Intentar MILP
+    if PULP_AVAILABLE:
+        try:
+            plan, total_cost = _milp_generate_plan(
+                _G,
+                approved,
+                current_semester,
+                program,
+                _credits_per_semester,
+                semester_options or {},
+                time_limit_seconds=30,  # límite de tiempo para el solver
+            )
+            # Si MILP produjo un plan útil (no vacío), devolver
+            if plan:
+                return plan, total_cost
+            # Si plan vacío (p. ej. porque solver puso todo en approved), seguir a fallback
+        except Exception as e:
+            # No queremos que el fallo del solver rompa la app; caeremos al método heurístico.
+            st.warning(f"Advertencia: MILP no pudo producir una solución óptima (fallback heurístico). Detalle: {e}")
+
+    # --- Fallback heurístico (iterativo) ---
+    # Copia del algoritmo anterior, pero asegurando no quedarnos en bucle infinito
+    semester_options_local = _deepcopy_semester_options(semester_options or {})
+    plan = []
+    approved_local = list(approved)
+    total_credits_local = total_credits_approved
+    current_sem = current_semester
     total_cost = 0
     semester_counts = {}
+    max_iterations = 30  # tope de seguridad
 
-    # guard clause: si ya cumplió
-    if total_credits_approved >= total_credits_required:
-        return plan, total_cost
-
-    # ciclo principal: añadir semestres hasta completar
-    while total_credits_approved < total_credits_required:
-        best_cost = float("inf")
-        best_config = None
-
-        # calcular available_subjects una sola vez por semestre
-        available_subjects = get_available_subjects(_G, tuple(approved), current_semester)
-
-        intersemestral_options = get_intersemestral_options(_G, tuple(approved))
+    while total_credits_local < total_credits_required and max_iterations > 0:
+        max_iterations -= 1
+        available_subjects = get_available_subjects(_G, tuple(approved_local), current_sem)
+        intersemestral_options = get_intersemestral_options(_G, tuple(approved_local))
         best_intersemestral = None
         if intersemestral_options:
-            best_intersemestral = max(intersemestral_options, key=lambda s: _G.nodes[s].get("credits", 0) / 1500000.0)
+            best_intersemestral = max(intersemestral_options, key=lambda s: _G.nodes[s]["credits"] / 1500000, default=None)
 
-        # probar configuraciones media matrícula si la opción existe
+        best_cost = float("inf")
+        best_config = None
         for is_half_time in [False, True]:
-            intersemestral_candidate = best_intersemestral if best_intersemestral else None
-
-            subjects, credits, intersemestral_credits, semester_cost = recommend_subjects(
-                _G, tuple(approved), current_semester, _credits_per_semester, is_half_time, intersemestral_candidate, available_subjects
+            inter = best_intersemestral if is_half_time and best_intersemestral else None
+            subjects, credits, inter_credits, semester_cost = recommend_subjects(
+                _G, approved_local, current_sem, _credits_per_semester, is_half_time, inter, available_subjects
             )
-
-            # material temporal de aprobadas si tomara esas materias
-            temp_approved = approved + list(subjects)
-            if intersemestral_candidate:
-                temp_approved.append(intersemestral_candidate)
-
-            remaining_semesters = estimate_remaining_semesters(
-                _G, temp_approved, total_credits_required, _credits_per_semester, is_half_time
-            )
+            temp_approved = approved_local + subjects
+            if inter:
+                temp_approved.append(inter)
+            remaining_semesters = estimate_remaining_semesters(_G, temp_approved, total_credits_required, _credits_per_semester, is_half_time)
             projected_cost = semester_cost + remaining_semesters * (5000000 if is_half_time else 10000000)
-
             if projected_cost < best_cost:
                 best_cost = projected_cost
                 best_config = {
                     "subjects": subjects,
                     "credits": credits,
-                    "intersemestral_credits": intersemestral_credits,
+                    "intersemestral_credits": inter_credits,
                     "semester_cost": semester_cost,
                     "is_half_time": is_half_time,
                     "extra_credits": 0,
-                    "intersemestral": intersemestral_candidate,
+                    "intersemestral": inter
                 }
 
-        # registrar repetición de semestre
-        semester_counts[current_semester] = semester_counts.get(current_semester, 0) + 1
+        if not best_config or (not best_config["subjects"] and not best_config["intersemestral"]):
+            # Si no se logró seleccionar materias (callejón), salimos para evitar bucle.
+            break
 
-        plan.append(
-            {
-                "semester": current_semester,
-                "repetition": semester_counts[current_semester],
-                "subjects": best_config["subjects"],
-                "credits": best_config["credits"],
-                "intersemestral_credits": best_config["intersemestral_credits"],
-                "is_half_time": best_config["is_half_time"],
-                "extra_credits": best_config["extra_credits"],
-                "intersemestral": best_config["intersemestral"],
-                "cost": best_config["semester_cost"],
-            }
-        )
-
-        # actualizar aprobadas y totales
-        approved.extend(best_config["subjects"])
-        total_credits_approved += best_config["credits"] + best_config["intersemestral_credits"]
-        total_cost += best_config["semester_cost"]
+        semester_counts[current_sem] = semester_counts.get(current_sem, 0) + 1
+        plan.append({
+            "semester": current_sem,
+            "repetition": semester_counts[current_sem],
+            "subjects": best_config["subjects"],
+            "credits": best_config["credits"],
+            "intersemestral_credits": best_config["intersemestral_credits"],
+            "is_half_time": best_config["is_half_time"],
+            "extra_credits": best_config["extra_credits"],
+            "intersemestral": best_config["intersemestral"],
+            "cost": best_config["semester_cost"]
+        })
+        approved_local.extend(best_config["subjects"])
+        total_credits_local += best_config["credits"] + best_config["intersemestral_credits"]
         if best_config["intersemestral"]:
-            approved.append(best_config["intersemestral"])
-
-        # actualizar semestre actual
-        current_semester = _calculate_semester(total_credits_approved)
-
-        # si hay opciones por semestre pasadas desde UI, actualizar localmente (no mutar la original)
-        if current_semester in semester_options_local:
-            semester_options_local[current_semester]["is_half_time"] = best_config["is_half_time"]
-            semester_options_local[current_semester]["extra_credits"] = best_config["extra_credits"]
-            semester_options_local[current_semester]["intersemestral"] = best_config["intersemestral"]
+            approved_local.append(best_config["intersemestral"])
+        total_cost += best_config["semester_cost"]
+        current_sem = _calculate_semester(total_credits_local)
 
         gc.collect()
 
