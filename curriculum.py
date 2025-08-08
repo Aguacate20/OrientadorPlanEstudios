@@ -1,12 +1,27 @@
 # curriculum.py
-# Versión: Priorizar reducir número de semestres por encima de costo (sin perder packing/mandatorias)
-# Mantiene: llenar/irse cerca de la capacidad, packing final, mandatorias priorizadas, intersemestrales sólo si reducen semestres.
+# Strategy: greedy lookahead con reglas de prioridad ajustadas.
+# Ahora: media matrícula solo se considera si gap >= HALF_CONSIDER_GAP_THRESHOLD
+#       y además reduce el coste proyectado al menos en HALF_COST_SAVINGS_THRESHOLD.
+#
+# Mantiene:
+# - Prioridad a materias mandatorias (Inglés / Core Currículum)
+# - Packing final para usar huecos pequeños
+# - Intersemestrales solo si reducen semestres totales
+# - Penalidad por gap: GAP_PENALTY_PER_CREDIT
+# - Métrica lexicográfica: (gap, estimated_semesters, cost) — prioriza reducir semestres
 
 import networkx as nx
 import streamlit as st
 import gc
 import math
 from typing import Iterable, List, Tuple, Dict, Any, Set
+
+# -------------------------
+# Parámetros ajustables
+# -------------------------
+HALF_CONSIDER_GAP_THRESHOLD = 5      # considerar media matrícula solo si gap (full-time) >= este valor
+HALF_COST_SAVINGS_THRESHOLD = 0.05   # requerir al menos este % de ahorro para elegir media matrícula
+MAX_LOOKAHEAD = 2                    # semestres a mirar adelante en la heurística
 
 # -------------------------
 # Helper: nombre mandatorio
@@ -192,7 +207,7 @@ def greedy_select_with_lookahead(
     available_subjects: List[str],
     current_sem: int,
     credits_limit: int,
-    lookahead: int = 2,
+    lookahead: int = MAX_LOOKAHEAD,
     favor_fill: bool = True,
 ) -> Tuple[List[str], int]:
     approved_set = set(approved)
@@ -298,7 +313,7 @@ def generate_full_plan(
     if total_credits_approved >= total_credits_required:
         return [], 0
 
-    lookahead = 2
+    lookahead = MAX_LOOKAHEAD
     plan = []
     approved_local = list(approved)
     total_credits_local = total_credits_approved
@@ -328,9 +343,11 @@ def generate_full_plan(
         intersemestral_options = get_intersemestral_options(_G, tuple(approved_local))
 
         best_sem_config = None
-        # CAMBIO PRINCIPAL: la tupla de comparación ahora prioriza semestres antes que costo
-        best_metric = (float('inf'), float('inf'), float('inf'))  # (gap, est_semesters, cost)
+        # tupla: (gap, est_semesters, cost)
+        best_metric = (float('inf'), float('inf'), float('inf'))
 
+        # EVALUAR FULL-TIME
+        full_results = None
         def eval_configuration(is_half_time_flag, allow_inter=True):
             if is_half_time_flag:
                 cap_tmp = max(0, base_capacity // 2 - 1)
@@ -342,7 +359,7 @@ def generate_full_plan(
                 _G, approved_local, available_subjects, current_sem, cap_tmp, lookahead=lookahead, favor_fill=True
             )
 
-            # post-pack tentativo (para evaluar gap real)
+            # post-pack tentativo para evaluación
             subjects_packed = list(subjects_selected)
             credits_packed = credits_selected
             remaining_tmp = cap_tmp - credits_packed
@@ -399,25 +416,60 @@ def generate_full_plan(
                 })
             return results
 
-        # evaluar full-time primero
         full_results = eval_configuration(False, allow_inter=True)
+        best_full = None
         if full_results:
             for r in full_results:
-                # **AQUÍ** cambiamos el orden de la tupla: gap, estimated_semesters, cost
                 metric = (r['gap_after'], r['estimated_semesters'], r['projected_total_cost'])
                 if metric < best_metric:
                     best_metric = metric
                     best_sem_config = r
+                    best_full = r
 
+        # Si full-time cubre gap 0 preferir inmediatamente
         if best_sem_config and best_sem_config['gap_after'] == 0:
-            pass
+            chosen_full = best_sem_config
+            # no consideramos media matrícula en este caso
         else:
-            half_results = eval_configuration(True, allow_inter=True)
-            for r in half_results:
-                metric = (r['gap_after'], r['estimated_semesters'], r['projected_total_cost'])
-                if metric < best_metric:
-                    best_metric = metric
-                    best_sem_config = r
+            # DECISIÓN SOBRE MEDIA MATRÍCULA:
+            # Solo evaluar opción de half-time si el gap del mejor full >= HALF_CONSIDER_GAP_THRESHOLD
+            consider_half = False
+            if best_full and best_full.get('gap_after', 999) >= HALF_CONSIDER_GAP_THRESHOLD:
+                consider_half = True
+
+            chosen_full = best_sem_config  # guardamos la mejor full tal como está
+
+            chosen_half = None
+            if consider_half:
+                half_results = eval_configuration(True, allow_inter=True)
+                # buscamos la mejor half
+                best_half_metric = (float('inf'), float('inf'), float('inf'))
+                best_half_candidate = None
+                if half_results:
+                    for r in half_results:
+                        metric = (r['gap_after'], r['estimated_semesters'], r['projected_total_cost'])
+                        if metric < best_half_metric:
+                            best_half_metric = metric
+                            best_half_candidate = r
+                # ahora: aplicar condición de ahorro
+                if best_half_candidate and best_full:
+                    full_cost = best_full.get('projected_total_cost', float('inf'))
+                    half_cost = best_half_candidate.get('projected_total_cost', float('inf'))
+                    # solo aceptar half si reduce coste al menos en el umbral relativo
+                    if full_cost > 0 and (half_cost <= full_cost * (1.0 - HALF_COST_SAVINGS_THRESHOLD)):
+                        chosen_half = best_half_candidate
+
+            # Si hay candidate half válida, compararla lexicográficamente con full
+            if chosen_half:
+                # usar la misma tupla de comparación (gap, est_semesters, cost)
+                t_full = (chosen_full['gap_after'], chosen_full['estimated_semesters'], chosen_full['projected_total_cost'])
+                t_half = (chosen_half['gap_after'], chosen_half['estimated_semesters'], chosen_half['projected_total_cost'])
+                if t_half < t_full:
+                    best_sem_config = chosen_half
+                else:
+                    best_sem_config = chosen_full
+            else:
+                best_sem_config = chosen_full
 
         if not best_sem_config or (not best_sem_config['subjects'] and not best_sem_config['intersemestral']):
             break
