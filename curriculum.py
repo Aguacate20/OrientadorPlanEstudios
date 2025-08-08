@@ -8,6 +8,7 @@ import streamlit as st
 import gc
 import math
 from typing import Iterable, List, Tuple, Dict, Any
+import re
 
 from courses_data import (
     fisioterapia_courses,
@@ -24,7 +25,6 @@ try:
     PULP_AVAILABLE = True
 except Exception:
     PULP_AVAILABLE = False
-
 
 @st.cache_resource
 def build_curriculum_graph(_courses: Dict[str, Dict[str, Any]]) -> nx.DiGraph:
@@ -223,6 +223,26 @@ def _build_capacity_by_semester(credits_per_semester: Dict[int, int], semester_o
         cap = max(0, cap + int(extra))
         capacities[s] = cap
     return capacities
+
+def _sanitize_name(name: str, maxlen: int = 40) -> str:
+    """
+    Convierte un nombre arbitrario en un identificador seguro para usar en nombres
+    de variables de PuLP: elimina caracteres no alfanuméricos (los sustituye por '_'),
+    colapsa guiones bajos repetidos, evita que empiece por dígito y acorta a maxlen.
+    """
+    if name is None:
+        return "course"
+    # Reemplaza cualquier secuencia de caracteres no alfanuméricos por un guion bajo
+    s = re.sub(r'[^0-9A-Za-z]+', '_', name)
+    # Colapsa varios '_' consecutivos y quita '_' al inicio/fin
+    s = re.sub(r'_+', '_', s).strip('_')
+    if not s:
+        s = "course"
+    # Si empieza con dígito, anteponer prefijo
+    if s[0].isdigit():
+        s = "c_" + s
+    # Limitar longitud para evitar nombres excesivamente largos
+    return s[:maxlen]
 
 
 def _milp_generate_plan(
