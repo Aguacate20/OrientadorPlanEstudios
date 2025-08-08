@@ -1,19 +1,16 @@
 # curriculum.py
-# Versión Greedy con lookahead (1-2 semestres) — criterio actualizado según preferencias del usuario:
-# 1) Priorizar que en cada semestre se cumpla o se aproxime lo máximo posible la capacidad de créditos.
-# 2) Si hay empate/compromiso, minimizar COSTOS (media matrícula, intersemestral, compra de créditos).
-# 3) Finalmente, minimizar NÚMERO DE SEMESTRES restantes.
-# Reglas extras aplicadas por preferencia del usuario:
-# - Priorizar materias del semestre nominal cuando estén disponibles (salvo que "desbloquear" mucho más compense).
-# - Intersemestrales solo se usan si reducen el número total de semestres.
-# - Evitar media matrícula si con full-time es posible llenar el semestre.
-# - Penalidad por gap de créditos: $800.000 por crédito no tomado del cupo.
+# Versión Greedy con lookahead (1-2 semestres) — criterios:
+# 1) Llenar o acercarse lo máximo posible a la capacidad del semestre.
+# 2) Minimizar costos (media matrícula, intersemestral, penalidad por gap).
+# 3) Minimizar número de semestres.
+#
+# Ajuste añadido: empaquetado final de créditos restantes para usar espacio sobrante
+# (útil en media matrícula; intentamos añadir materias pequeñas nominales/útiles).
 
 import networkx as nx
 import streamlit as st
 import gc
 import math
-import re
 from typing import Iterable, List, Tuple, Dict, Any, Set
 
 # --------------------------------------------------
@@ -111,7 +108,6 @@ def get_intersemestral_options(_G: nx.DiGraph, approved_subjects: Tuple[str, ...
 # Helpers para la estrategia greedy con lookahead
 # --------------------------------------------------
 
-
 def _build_capacity_by_semester(credits_per_semester: Dict[int, int], semester_options: Dict[int, Dict[str, Any]], semester_range: List[int]) -> Dict[int, int]:
     capacities = {}
     for s in semester_range:
@@ -187,9 +183,8 @@ def greedy_select_with_lookahead(
     - favor_fill=True prioriza llenar la capacidad del semestre.
     - Se añade un pequeño bonus a materias del semestre nominal para preferir "normalidad".
 
-    Nueva regla importante: si todas las materias nominales disponibles (las del semestre nominal) caben en la capacidad,
-    las seleccionamos todas inmediatamente (prioridad por normalidad). Esto evita reordenamientos raros cuando el usuario
-    ya aprobó el semestre anterior y quiere ver el plan nominal.
+    Mejora añadida: al final intentamos 'empaquetar' créditos restantes con materias pequeñas disponibles
+    (priorizando materias nominales), incluyendo sus coreqs si encajan.
     """
     approved_set = set(approved)
     available_set = list(available_subjects)
@@ -279,13 +274,44 @@ def greedy_select_with_lookahead(
                 selected.append(n)
         total_credits += best_choice_credits
 
+    # -----------------------
+    # PACKING STEP (nueva mejora)
+    # Intentamos llenar los créditos restantes con materias pequeñas disponibles,
+    # priorizando materias nominales (siempre sin violar prereqs / coreqs).
+    # -----------------------
+    remaining = credits_limit - total_credits
+    if remaining > 0:
+        # candidatos que aún no fueron seleccionados y que encajan (incluyendo coreqs)
+        pack_candidates = []
+        for c in available_set:
+            if c in selected:
+                continue
+            # conjunto requerido (incluye coreqs)
+            coreqs = _collect_coreqs_to_take(G, c, approved_set.union(selected), set(available_set))
+            need_set = {c} | coreqs
+            need_credits = sum(G.nodes[n].get("credits", 0) for n in need_set)
+            if need_credits <= remaining:
+                # prioridad: nominal first (1/0), then credits desc, then semester asc
+                is_nominal = 1 if G.nodes[c].get("semester") == current_sem else 0
+                pack_candidates.append((is_nominal, need_credits, c, need_set))
+        # ordenar: nominal (1) primero, luego mayor créditos para llenar mejor
+        pack_candidates.sort(key=lambda x: (-x[0], -x[1], G.nodes[x[2]].get("semester", 99)))
+        for is_nominal, need_credits, c, need_set in pack_candidates:
+            if need_credits <= remaining:
+                for n in need_set:
+                    if n not in selected:
+                        selected.append(n)
+                remaining -= need_credits
+                total_credits += need_credits
+            if remaining <= 0:
+                break
+
     return selected, total_credits
 
 
 # --------------------------------------------------
-# Generar plan completo con la nueva priorización
+# Generar plan completo con la priorización solicitada
 # --------------------------------------------------
-
 
 def generate_full_plan(
     _G: nx.DiGraph,
@@ -301,7 +327,7 @@ def generate_full_plan(
       2) minimizar costo proyectado
       3) minimizar semestres restantes
 
-    Reglas específicas implementadas según tus respuestas:
+    Reglas implementadas:
     - Priorizar materias nominales (bonus moderado) salvo que desbloquear mucho más compense.
     - Intersemestrales solo considerados si reducen el número total de semestres.
     - Evitar media matrícula cuando full-time puede llenar el semestre.
@@ -335,7 +361,7 @@ def generate_full_plan(
 
         base_capacity = _credits_per_semester.get(min(current_sem, 10), 0)
         opts = semester_options.get(current_sem, {}) if semester_options else {}
-        # capacity without considering extra credits user may buy (we'll consider extra_credits option via opts when applying)
+        # capacity sin contar extra_credits (se aplicará si user lo setea)
         if opts.get("is_half_time"):
             capacity = max(0, base_capacity // 2 - 1)
         else:
@@ -350,7 +376,7 @@ def generate_full_plan(
         # Métrica lexicográfica: (gap_after_fill, projected_cost_with_gap_penalty, estimated_semesters)
         best_metric = (float('inf'), float('inf'), float('inf'))
 
-        # Primero evaluar full-time — si full-time llena el semestre (gap==0) lo preferimos y no consideramos medio-tiempo
+        # Primero evaluar full-time — si full-time llena (gap==0) lo preferimos
         def eval_configuration(is_half_time_flag, allow_inter=True):
             if is_half_time_flag:
                 cap_tmp = max(0, base_capacity // 2 - 1)
@@ -378,6 +404,7 @@ def generate_full_plan(
                 if credits_selected + inter_credits > cap_tmp:
                     continue
 
+                # regla: solo considerar intersemestral si reduce número total de semestres
                 if inter_choice:
                     temp_approved_with_inter = set(approved_local) | set(subjects_selected) | {inter_choice}
                     remaining_with_inter = _estimate_remaining_semesters_simulation(
@@ -447,17 +474,19 @@ def generate_full_plan(
             'cost': sem_cost,
         })
 
+        # actualizar aprobadas y crédito total
         approved_local.extend(best_sem_config['subjects'])
         if best_sem_config['intersemestral']:
+            # si se tomó intersemestral, se considera aprobado para el siguiente semestre
             approved_local.append(best_sem_config['intersemestral'])
         total_credits_local += best_sem_config['credits'] + best_sem_config['intersemestral_credits']
         total_cost += sem_cost
 
+        # avanzar semestre en función de créditos totales
         current_sem = _calculate_semester(total_credits_local)
 
         gc.collect()
 
     return plan, total_cost
-
 
 # Fin de archivo
