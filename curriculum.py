@@ -1,7 +1,7 @@
 # curriculum.py
 # Versión que sustituye el MILP por una heurística Greedy con lookahead (1-2 semestres).
-# El objetivo principal es optimizar el *tiempo* (minimizar semestres restantes) en milisegundos,
-# sin dependencias externas (sin PuLP ni solver externo).
+# Objetivo: minimizar SEMESTRES restantes y, como criterio secundario, minimizar COSTOS.
+# No usa PuLP ni solvers externos — rápido y reproducible en Streamlit Cloud.
 
 import networkx as nx
 import streamlit as st
@@ -115,7 +115,6 @@ def get_intersemestral_options(_G: nx.DiGraph, approved_subjects: Tuple[str, ...
 def _build_capacity_by_semester(credits_per_semester: Dict[int, int], semester_options: Dict[int, Dict[str, Any]], semester_range: List[int]) -> Dict[int, int]:
     """
     Calcula la capacidad de créditos por semestre teniendo en cuenta semester_options.
-    Igual que la versión anterior pero simplificada para la heurística.
     """
     capacities = {}
     for s in semester_range:
@@ -197,9 +196,9 @@ def greedy_select_with_lookahead(
     Selección greedy para un semestre con lookahead=1 o 2.
     Prioriza materias cuya inclusión "desbloquea" más asignaturas en los próximos semestres.
 
-    Algoritmo (resumen):
-      - iterativamente selecciona la materia con mejor ratio (beneficio incremental / créditos) hasta llenar el cupo.
-      - beneficio calculado simulando 1 o 2 semestres hacia adelante: cuántas materias adicionales estarían disponibles.
+    Se ha ajustado el scoring para favorecer, cuando los beneficios de desbloqueo son similares,
+    las materias que llenen mejor la capacidad (más créditos), evitando así elegir intersemestrales
+    que optimicen coste pero reduzcan la carga académica inmediata.
     """
     approved_set = set(approved)
     available_set = list(available_subjects)  # copia
@@ -247,17 +246,18 @@ def greedy_select_with_lookahead(
             benefit = inc1 * 2 + inc2
 
             # score por unidad de crédito (evitar seleccionar materias grandes sin beneficio)
-            score = (benefit / max(1, need_credits))
+            # añadimos un término que favorece ligeramente mayores créditos cuando benefit igual
+            score = (benefit / max(1, need_credits)) + 0.005 * need_credits
 
-            # desempate: mayor cantidad de beneficio absoluto
-            if score > best_score or (abs(score - best_score) < 1e-9 and benefit > 0 and best_choice is not None and need_credits > best_choice_credits):
+            # desempate: preferir mayor beneficio absoluto y luego mayor crédito
+            if score > best_score or (abs(score - best_score) < 1e-9 and (benefit > 0 and best_choice is not None and need_credits > best_choice_credits)):
                 best_score = score
                 best_choice = cand
                 best_choice_full_set = need_set
                 best_choice_credits = need_credits
 
-        # Si no encontramos un candidato con beneficio (score <= 0), entonces rellenamos por créditos: materias más grandes primero
-        if best_choice is None or best_score <= 0:
+        # Si no encontramos un candidato con beneficio significativo (score <= 0.01), entonces rellenamos por créditos: materias más grandes primero
+        if best_choice is None or best_score <= 0.01:
             # intentar llenar por créditos (orden por créditos desc, semestre asc)
             remaining = credits_limit - total_credits
             optional = sorted([c for c in candidates if G.nodes[c].get("credits", 0) <= remaining], key=lambda s: (-G.nodes[s].get("credits", 0), G.nodes[s].get("semester", 99)))
@@ -297,7 +297,7 @@ def generate_full_plan(
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Genera el plan completo usando la heurística greedy con lookahead.
-    El criterio principal es minimizar el número de semestres restantes (tiempo).
+    Objetivo: minimizar número de semestres restantes (tiempo) y, secundario, minimizar costo total.
 
     Devuelve (plan, total_cost).
     """
@@ -338,13 +338,12 @@ def generate_full_plan(
         available_subjects = get_available_subjects(_G, tuple(approved_local), current_sem)
         intersemestral_options = get_intersemestral_options(_G, tuple(approved_local))
 
-        # Decidir si medio-tiempo o full-time: probamos ambas opciones y elegimos la que minimice semestres restantes
+        # Decidir si medio-tiempo o full-time: probamos ambas opciones y elegimos la que minimice semestres y costo
         best_sem_config = None
-        best_remaining_semesters = float('inf')
+        best_metric = (float('inf'), float('inf'), float('-inf'))  # (semesters, cost, credits)
 
         for is_half_time in [False, True]:
             # configurar capacidad temporal
-            cap_tmp = capacity
             if is_half_time:
                 cap_tmp = max(0, base_capacity // 2 - 1)
             else:
@@ -356,40 +355,53 @@ def generate_full_plan(
                 _G, approved_local, available_subjects, current_sem, cap_tmp, lookahead=lookahead
             )
 
-            # considerar intersemestral si aplica (añadir como opción si cabe)
-            inter_choice = None
-            inter_credits = 0
+            # Ahora evaluamos dos sub-opciones: con y sin intersemestral (si existen)
+            inter_candidates = [None]
             if intersemestral_options:
-                # elegir la de mayor crédito que quepa
-                for ic in sorted(intersemestral_options, key=lambda s: -_G.nodes[s].get('credits', 0)):
-                    if credits_selected + _G.nodes[ic].get('credits', 0) <= cap_tmp:
-                        inter_choice = ic
-                        inter_credits = _G.nodes[ic].get('credits', 0)
-                        break
+                # tomar hasta 2 mejores intersemestrales por crédito para evaluar (si hay muchas)
+                inter_candidates.extend(sorted(intersemestral_options, key=lambda s: -_G.nodes[s].get('credits', 0))[:2])
 
-            # construir conjunto temporal de aprobadas y estimar semestres restantes
-            temp_approved = set(approved_local) | set(subjects_selected)
-            if inter_choice:
-                temp_approved.add(inter_choice)
+            for inter_choice in inter_candidates:
+                inter_credits = _G.nodes[inter_choice].get('credits', 0) if inter_choice else 0
+                # no permitir intersemestral que haga overflow
+                if credits_selected + inter_credits > cap_tmp:
+                    continue
 
-            remaining_after = _estimate_remaining_semesters_simulation(
-                _G, temp_approved, total_credits_required, _credits_per_semester, semester_options, current_sem + 1
-            )
+                # construir conjunto temporal de aprobadas y estimar semestres restantes
+                temp_approved = set(approved_local) | set(subjects_selected)
+                if inter_choice:
+                    temp_approved.add(inter_choice)
 
-            # total semestres esperados = 1 (este semestre) + remaining_after
-            total_estimated = 1 + remaining_after
+                remaining_after = _estimate_remaining_semesters_simulation(
+                    _G, temp_approved, total_credits_required, _credits_per_semester, semester_options, current_sem + 1
+                )
 
-            # preferir menor tiempo; si empate, preferir mayor carga de créditos ahora
-            if total_estimated < best_remaining_semesters or (total_estimated == best_remaining_semesters and credits_selected + inter_credits > (best_sem_config or {}).get('credits', -1)):
-                best_remaining_semesters = total_estimated
-                best_sem_config = {
-                    'is_half_time': is_half_time,
-                    'subjects': subjects_selected,
-                    'credits': credits_selected,
-                    'intersemestral': inter_choice,
-                    'intersemestral_credits': inter_credits,
-                    'capacity': cap_tmp,
-                }
+                per_sem_cost = 5000000 if is_half_time else 10000000
+                current_sem_cost = per_sem_cost + (1500000 if inter_choice else 0)
+                projected_total_cost = current_sem_cost + remaining_after * per_sem_cost
+                total_estimated_semesters = 1 + remaining_after
+
+                # Métrica lexicográfica: minimizar semestres, luego costo, luego maximizar créditos actuales
+                metric = (total_estimated_semesters, projected_total_cost, credits_selected + inter_credits)
+
+                # decidir si reemplaza mejor opción: buscamos menor semestres; si empata, menor costo; si empata, mayor créditos
+                if (metric[0] < best_metric[0]) or (
+                    metric[0] == best_metric[0] and metric[1] < best_metric[1]
+                ) or (
+                    metric[0] == best_metric[0] and metric[1] == best_metric[1] and metric[2] > best_metric[2]
+                ):
+                    best_metric = metric
+                    best_sem_config = {
+                        'is_half_time': is_half_time,
+                        'subjects': subjects_selected,
+                        'credits': credits_selected,
+                        'intersemestral': inter_choice,
+                        'intersemestral_credits': inter_credits,
+                        'capacity': cap_tmp,
+                        'projected_total_cost': projected_total_cost,
+                        'estimated_semesters': total_estimated_semesters,
+                        'current_sem_cost': current_sem_cost,
+                    }
 
         # Si no encontramos config viable (calles), salimos
         if not best_sem_config or (not best_sem_config['subjects'] and not best_sem_config['intersemestral']):
@@ -397,9 +409,7 @@ def generate_full_plan(
 
         # Aplicar la mejor configuración para este semestre
         semester_counts[current_sem] = semester_counts.get(current_sem, 0) + 1
-        sem_cost = 5000000 if best_sem_config['is_half_time'] else 10000000
-        if best_sem_config['intersemestral']:
-            sem_cost += 1500000
+        sem_cost = best_sem_config['current_sem_cost']
 
         plan.append({
             'semester': current_sem,
