@@ -1,6 +1,7 @@
 # app.py
-# Interfaz de Streamlit para el orientador de plan de estudios (con checkboxes + botón de generar)
-# Incluye medición del tiempo de cálculo del plan.
+# Interfaz de Streamlit para el orientador de plan de estudios (check + botón)
+# Nota: mantiene todos los cálculos (costos, créditos, tiempo), pero puede ocultar
+# valores numéricos en la UI mediante HIDE_VALUES.
 
 import streamlit as st
 import networkx as nx
@@ -27,6 +28,11 @@ from curriculum import (
     generate_full_plan,
     get_intersemestral_options,
 )
+
+# ---------------------------
+# UI visual toggle: ocultar valores numéricos (costos/créditos/tiempo)
+# ---------------------------
+HIDE_VALUES = True  # <-- poner False si quieres volver a mostrar todos los números para debug
 
 # ---------- Estado de sesión inicial ----------
 if "approved_subjects" not in st.session_state:
@@ -91,7 +97,11 @@ def _current_semester_from_approved():
     return calculate_semester(total_credits_approved), total_credits_approved
 
 current_semester, total_credits_approved = _current_semester_from_approved()
-st.write(f"**Semestre actual (estimado)**: {current_semester} (Créditos aprobados: {total_credits_approved})")
+# Mostrar semestre actual (ocultar créditos si HIDE_VALUES=True)
+if HIDE_VALUES:
+    st.write(f"**Semestre actual (estimado)**: {current_semester}")
+else:
+    st.write(f"**Semestre actual (estimado)**: {current_semester} (Créditos aprobados: {total_credits_approved})")
 
 # ---------- Función para generar/actualizar plan (con medición de tiempo) ----------
 def update_plan():
@@ -128,8 +138,9 @@ def update_plan():
     st.session_state.previous_approved_subjects = st.session_state.approved_subjects.copy()
     st.session_state.last_plan_time = elapsed
 
-    # Mostrar tiempo en la UI para feedback inmediato
-    st.write(f"⏱️ Tiempo de cálculo del plan: {elapsed:.3f} segundos")
+    # Mostrar tiempo si está permitido
+    if not HIDE_VALUES:
+        st.write(f"⏱️ Tiempo de cálculo del plan: {elapsed:.3f} segundos")
 
 # ---------- Selección de asignaturas aprobadas via FORM (checkboxes) ----------
 st.subheader("Seleccione las asignaturas aprobadas (por semestre)")
@@ -167,8 +178,8 @@ with st.form("approved_form"):
 # ---------- Mostrar plan en pestañas (si existe) ----------
 if st.session_state.plan:
     st.subheader("Plan de estudios recomendado")
-    # Mostrar tiempo de la última generación
-    if st.session_state.last_plan_time is not None:
+    # Mostrar tiempo de la última generación si no ocultamos valores
+    if st.session_state.last_plan_time is not None and not HIDE_VALUES:
         st.info(f"Último cálculo: {st.session_state.last_plan_time:.3f} s")
 
     # Botón para recalcular plan con las opciones actuales (por si el usuario modificó media matrícula/extra/intersemestral)
@@ -231,20 +242,35 @@ if st.session_state.plan:
             }
 
             # Mostrar la info del plan (basada en el último plan calculado)
-            st.write(f"**Créditos**: {semester_plan.get('credits', 0)} de {credits_per_semester.get(effective_semester, 0)} disponibles (Intersemestral: {semester_plan.get('intersemestral_credits', 0)} créditos)")
-            st.write(f"**Costo**: ${semester_plan.get('cost', 0):,.0f}")
-            if semester_plan.get("is_half_time"):
-                st.write("**Media matrícula** (recomendada para optimizar costos)")
-            if semester_plan.get("extra_credits", 0) > 0:
-                st.write(f"**Créditos extra comprados**: {semester_plan['extra_credits']} (recomendado para reducir semestres)")
-            if semester_plan.get("intersemestral"):
-                st.write(f"**Intersemestral**: {semester_plan['intersemestral']} (recomendado para optimizar costos)")
+            # Ocultar números si HIDE_VALUES=True
+            if not HIDE_VALUES:
+                st.write(f"**Créditos**: {semester_plan.get('credits', 0)} de {credits_per_semester.get(effective_semester, 0)} disponibles (Intersemestral: {semester_plan.get('intersemestral_credits', 0)} créditos)")
+                st.write(f"**Costo**: ${semester_plan.get('cost', 0):,.0f}")
+                if semester_plan.get("is_half_time"):
+                    st.write("**Media matrícula** (recomendada para optimizar costos)")
+                if semester_plan.get("extra_credits", 0) > 0:
+                    st.write(f"**Créditos extra comprados**: {semester_plan['extra_credits']} (recomendado para reducir semestres)")
+                if semester_plan.get("intersemestral"):
+                    st.write(f"**Intersemestral**: {semester_plan['intersemestral']} (recomendado para optimizar costos)")
+            else:
+                # Mensaje minimalista cuando ocultamos valores numéricos
+                if semester_plan.get("is_half_time"):
+                    st.write("Recomendación: Media matrícula (opción activada).")
+                if semester_plan.get("intersemestral"):
+                    st.write("Intersemestral recomendado.")
+                # No mostramos créditos ni montos monetarios
 
             st.write("**Asignaturas recomendadas**:")
             for subject in semester_plan.get("subjects", []):
-                credits = G.nodes[subject]["credits"] if subject in G.nodes else "?"
-                st.write(f"- {subject} ({credits} créditos)")
+                # Mostrar sólo el nombre de la asignatura (ocultar créditos si HIDE_VALUES)
+                if HIDE_VALUES:
+                    st.write(f"- {subject}")
+                else:
+                    credits = G.nodes[subject]["credits"] if subject in G.nodes else "?"
+                    st.write(f"- {subject} ({credits} créditos)")
 
-    st.write(f"**Costo total estimado**: ${st.session_state.total_cost:,.0f}")
+    # Mostrar costo total solo si está permitido
+    if not HIDE_VALUES:
+        st.write(f"**Costo total estimado**: ${st.session_state.total_cost:,.0f}")
 else:
     st.info("No hay plan generado todavía. Seleccione asignaturas aprobadas y pulse 'Generar plan de estudios'.")
