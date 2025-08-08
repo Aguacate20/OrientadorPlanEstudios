@@ -142,12 +142,40 @@ def update_plan():
     if not HIDE_VALUES:
         st.write(f"⏱️ Tiempo de cálculo del plan: {elapsed:.3f} segundos")
 
+# ---------- Callback de submit: lee LOS ESTADOS REALES de los checkboxes y actualiza ----------
+def handle_submit():
+    """
+    Lee explícitamente el estado de cada checkbox (por sus keys) y actualiza
+    st.session_state.approved_subjects con la lista actual. Luego inicializa
+    semester_options y llama a update_plan().
+    """
+    selected = []
+    # reconstruir la lista de cursos por semestre (misma lógica usada para construir checkboxes)
+    for semester in range(1, 11):
+        if courses_by_semester:
+            semester_courses = courses_by_semester.get(semester, [])
+        else:
+            semester_courses = [course for course, info in courses.items() if info.get("semester") == semester]
+        for idx, course in enumerate(semester_courses):
+            key = f"approved_chk_{program}_{semester}_{idx}_{course}"
+            # leer el estado del checkbox desde st.session_state (False por defecto si no existe)
+            if st.session_state.get(key, False):
+                selected.append(course)
+
+    # Guardar aprobados y asegurar semester_options inicializadas
+    st.session_state.approved_subjects = selected
+    sem_now, _ = _current_semester_from_approved()
+    for s in range(sem_now, 11):
+        st.session_state.semester_options.setdefault(s, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
+
+    # Generar plan
+    update_plan()
+
 # ---------- Selección de asignaturas aprobadas via FORM (checkboxes) ----------
 st.subheader("Seleccione las asignaturas aprobadas (por semestre)")
 
 # Mostrar un formulario para agrupar la selección y evitar reruns por cada checkbox
 with st.form("approved_form"):
-    selected = []
     # Para cada semestre, usar un expander (cerrado por defecto salvo el semestre actual)
     for semester in range(1, 11):
         if courses_by_semester:
@@ -158,22 +186,14 @@ with st.form("approved_form"):
         with st.expander(f"Semestre {semester} ({len(semester_courses)} asignaturas)", expanded=(semester == current_semester)):
             for idx, course in enumerate(semester_courses):
                 key = f"approved_chk_{program}_{semester}_{idx}_{course}"
+                # default ahora se toma de lo guardado en session_state (para mantener persistencia)
                 default = course in st.session_state.approved_subjects
-                checked = st.checkbox(course, value=default, key=key)
-                if checked:
-                    selected.append(course)
+                # cada checkbox escribe su estado en st.session_state[key]
+                st.checkbox(course, value=default, key=key)
 
     # Botón del formulario: al enviarlo actualizamos los aprobados y generamos plan
-    submitted = st.form_submit_button("Generar plan de estudios")
-    if submitted:
-        # Guardar aprobados y generar plan (solo aquí se ejecuta la lógica pesada)
-        st.session_state.approved_subjects = selected
-        # Inicializar semester_options si está vacío
-        for s in range(current_semester, 11):
-            st.session_state.semester_options.setdefault(s, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
-        with st.spinner("Generando plan de estudios recomendado..."):
-            update_plan()
-        st.success("Plan generado ✅")
+    # Usamos on_click=handle_submit para leer los estados actuales de todos los checkboxes
+    st.form_submit_button("Generar plan de estudios", on_click=handle_submit)
 
 # ---------- Mostrar plan en pestañas (si existe) ----------
 if st.session_state.plan:
