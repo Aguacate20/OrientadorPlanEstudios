@@ -1,8 +1,9 @@
 # app.py
 # Interfaz de Streamlit para el orientador de plan de estudios (check + botón)
-# Muestra siempre créditos por semestre y por asignatura (no muestra valores financieros).
+# Incluye flechas izquierda/derecha para desplazar el carrusel de pestañas.
 
 import streamlit as st
+import streamlit.components.v1 as components
 import networkx as nx
 import time
 from courses_data import (
@@ -28,165 +29,171 @@ from curriculum import (
     get_intersemestral_options,
 )
 
-import streamlit.components.v1 as components
-
-components.html(
-    """
-    <style>
-    /* Hacer la barra de tabs scrollable horizontalmente */
-    div[role="tablist"] {
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch !important;
-        white-space: nowrap !important;
-        position: relative;
-    }
-    div[role="tablist"] > button, div[role="tablist"] > div > button {
-        display: inline-block !important;
-        white-space: nowrap !important;
-    }
-
-    /* Estilo de las flechas overlay */
-    .tab-scroll-btn {
-        position: absolute;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 36px;
-        height: 36px;
-        border-radius: 18px;
-        background: rgba(0,0,0,0.12);
-        border: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        z-index: 9999;
-        backdrop-filter: blur(4px);
-    }
-    .tab-scroll-btn:hover {
-        background: rgba(0,0,0,0.18);
-    }
-    .tab-scroll-left { left: 6px; }
-    .tab-scroll-right { right: 6px; }
-    .tab-scroll-btn svg { width: 18px; height: 18px; fill: rgba(0,0,0,0.8); }
-    </style>
-
-    <script>
-    (function() {
-      function attachControls() {
-        const tablist = document.querySelector('div[role="tablist"]');
-        if (!tablist) return false;
-
-        // evitar duplicados
-        if (tablist.__controlsAttached) return true;
-        tablist.__controlsAttached = true;
-
-        // asegurar position:relative en el contenedor que vamos a usar (si no existe)
-        const parent = tablist;
-        if (getComputedStyle(parent).position === 'static') {
-          parent.style.position = 'relative';
-        }
-
-        // --- Crear botones ---
-        const leftBtn = document.createElement('button');
-        leftBtn.className = 'tab-scroll-btn tab-scroll-left';
-        leftBtn.title = 'Scroll left';
-        leftBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
-        const rightBtn = document.createElement('button');
-        rightBtn.className = 'tab-scroll-btn tab-scroll-right';
-        rightBtn.title = 'Scroll right';
-        rightBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>';
-
-        // añadir pero invisibles inicialmente si no hace falta
-        parent.appendChild(leftBtn);
-        parent.appendChild(rightBtn);
-
-        // función de scroll suave
-        function scrollByAmount(amount) {
-          tablist.scrollBy({ left: amount, behavior: 'smooth' });
-        }
-
-        leftBtn.addEventListener('click', () => {
-          scrollByAmount(-Math.max(120, Math.floor(tablist.clientWidth * 0.4)));
-        });
-        rightBtn.addEventListener('click', () => {
-          scrollByAmount(Math.max(120, Math.floor(tablist.clientWidth * 0.4)));
-        });
-
-        // mostrar/ocultar botones según overflow
-        function updateButtonsVisibility() {
-          if (tablist.scrollWidth > tablist.clientWidth + 2) {
-            leftBtn.style.display = 'flex';
-            rightBtn.style.display = 'flex';
-          } else {
-            leftBtn.style.display = 'none';
-            rightBtn.style.display = 'none';
-          }
-        }
-
-        // mejorar drag-to-scroll con pointer events (mouse + touch)
-        let isDown = false;
-        let startX = 0;
-        let scrollLeft = 0;
-
-        tablist.addEventListener('pointerdown', (e) => {
-          // solo si clic en área no interactiva (evitar interferir al clicar la propia tab)
-          isDown = true;
-          tablist.setPointerCapture(e.pointerId);
-          startX = e.clientX;
-          scrollLeft = tablist.scrollLeft;
-          tablist.style.cursor = 'grabbing';
-        });
-
-        tablist.addEventListener('pointermove', (e) => {
-          if (!isDown) return;
-          e.preventDefault();
-          const x = e.clientX;
-          const walk = (x - startX) * 1; // velocidad
-          tablist.scrollLeft = scrollLeft - walk;
-        });
-
-        function endDrag(e) {
-          if (!isDown) return;
-          isDown = false;
-          try { tablist.releasePointerCapture(e.pointerId); } catch (_) {}
-          tablist.style.cursor = 'grab';
-        }
-
-        tablist.addEventListener('pointerup', endDrag);
-        tablist.addEventListener('pointercancel', endDrag);
-        tablist.addEventListener('pointerleave', endDrag);
-
-        // touch native scrolling still works; pointer handling above supports click-drag
-        // actualizar visibility y posicion en resize/scroll
-        window.addEventListener('resize', updateButtonsVisibility);
-        tablist.addEventListener('scroll', updateButtonsVisibility);
-
-        // intentar inicializar visibilidad un tick después (DOM puede cambiar)
-        setTimeout(updateButtonsVisibility, 200);
-        setTimeout(updateButtonsVisibility, 800);
-
-        return true;
-      }
-
-      // reintentar varias veces porque Streamlit puede renderizar tabs después
-      let tries = 0;
-      const maxTries = 20;
-      const interval = setInterval(() => {
-        tries++;
-        const ok = attachControls();
-        if (ok || tries >= maxTries) clearInterval(interval);
-      }, 300);
-    })();
-    </script>
-    """,
-    height=1,
-    )
-
 # ---------------------------
 # UI visual toggle: ocultar valores numéricos financieros (costos/tiempos)
 # NOTA: créditos SIEMPRE se muestran.
 # ---------------------------
 HIDE_VALUES = True  # <-- poner False si quieres ver también costs/time para debug (no afecta créditos)
+
+# ---------------------------
+# CSS + JS para hacer el tablist desplazable y añadir flechas
+# ---------------------------
+st.markdown(
+    """
+    <style>
+    /* Hacemos la fila de tabs desplazable horizontalmente */
+    div[role="tablist"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        white-space: nowrap !important;
+        position: relative;
+        scroll-behavior: smooth;
+    }
+    /* Forzar que los botones de la pestaña no se rompan */
+    div[role="tablist"] > button, div[role="tablist"] > div > button {
+        display: inline-block !important;
+        white-space: nowrap !important;
+    }
+    /* Estilo para los botones de flecha que insertaremos */
+    .tabs-scroll-btn {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 9999;
+        background: rgba(255,255,255,0.92);
+        border: 1px solid rgba(0,0,0,0.08);
+        border-radius: 6px;
+        width: 34px;
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        cursor: pointer;
+        user-select: none;
+    }
+    .tabs-scroll-btn:active {
+        transform: translateY(-50%) scale(0.98);
+    }
+    .tabs-scroll-btn svg {
+        width: 16px;
+        height: 16px;
+    }
+    .tabs-scroll-left { left: 4px; }
+    .tabs-scroll-right { right: 4px; }
+
+    /* Pequeño ajuste para evitar que los botones cubran totalmente botones de pestañas en pantallas muy pequeñas */
+    @media (max-width: 520px) {
+        .tabs-scroll-btn { width: 30px; height: 30px; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# JS: insertar botones de scroll y lógica de click / hold-to-scroll
+components.html(
+    """
+    <script>
+    (function() {
+      function ensureButtons() {
+        const tablist = document.querySelector('div[role="tablist"]');
+        if (!tablist) return false;
+
+        // Evitar reinserciones
+        if (tablist.__scrollButtonsAdded) return true;
+        tablist.__scrollButtonsAdded = true;
+
+        // Crear botón izquierdo
+        const leftBtn = document.createElement('div');
+        leftBtn.className = 'tabs-scroll-btn tabs-scroll-left';
+        leftBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
+        // Crear botón derecho
+        const rightBtn = document.createElement('div');
+        rightBtn.className = 'tabs-scroll-btn tabs-scroll-right';
+        rightBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
+
+        // Insertarlos como hijos del contenedor padre para que se posicionen relativo al tablist
+        // Buscamos el padre más cercano que envuelve el tablist para posicionar relativo a ese contenedor
+        const parent = tablist.parentElement || document.body;
+        parent.style.position = parent.style.position || 'relative';
+        parent.appendChild(leftBtn);
+        parent.appendChild(rightBtn);
+
+        // Posicionar los botones en relación al tablist: calculamos offsetLeft/Right
+        function positionButtons() {
+          const rect = tablist.getBoundingClientRect();
+          const parentRect = parent.getBoundingClientRect();
+          // left: distancia desde el padre al inicio del tablist + pequeño margen
+          leftBtn.style.left = Math.max(4, rect.left - parentRect.left + 4) + 'px';
+          // right: distancia desde el final del tablist hasta el borde derecho del padre - margen
+          rightBtn.style.left = Math.min(parentRect.width - 40, rect.right - parentRect.left - 38) + 'px';
+          // y aseguramos que estén alineados verticalmente al centro del tablist
+          leftBtn.style.top = (rect.top - parentRect.top + rect.height/2) + 'px';
+          rightBtn.style.top = (rect.top - parentRect.top + rect.height/2) + 'px';
+        }
+
+        // Scroll helpers
+        const STEP = 220; // píxeles por click
+        let leftInterval = null;
+        let rightInterval = null;
+
+        function scrollLeftOnce() {
+          tablist.scrollBy({left: -STEP, behavior: 'smooth'});
+        }
+        function scrollRightOnce() {
+          tablist.scrollBy({left: STEP, behavior: 'smooth'});
+        }
+
+        // Click handlers
+        leftBtn.addEventListener('click', (e) => { e.stopPropagation(); scrollLeftOnce(); });
+        rightBtn.addEventListener('click', (e) => { e.stopPropagation(); scrollRightOnce(); });
+
+        // Hold-to-scroll: mantener presionado inicia intervalo
+        leftBtn.addEventListener('mousedown', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          leftInterval = setInterval(() => { tablist.scrollLeft -= 18; }, 20);
+        });
+        leftBtn.addEventListener('mouseup', (e) => { clearInterval(leftInterval); leftInterval = null; });
+        leftBtn.addEventListener('mouseleave', (e) => { clearInterval(leftInterval); leftInterval = null; });
+
+        rightBtn.addEventListener('mousedown', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          rightInterval = setInterval(() => { tablist.scrollLeft += 18; }, 20);
+        });
+        rightBtn.addEventListener('mouseup', (e) => { clearInterval(rightInterval); rightInterval = null; });
+        rightBtn.addEventListener('mouseleave', (e) => { clearInterval(rightInterval); rightInterval = null; });
+
+        // Touch: on touchstart, do single scroll; long press handled by multiple taps or inertia
+        leftBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); tablist.scrollLeft -= STEP; }, {passive: true});
+        rightBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); tablist.scrollLeft += STEP; }, {passive: true});
+
+        // Reposicionar botones si la ventana cambia o el layout cambia
+        window.addEventListener('resize', () => { setTimeout(positionButtons, 60); });
+        // También observar cambios en el tablist y reposicionar
+        const obs = new MutationObserver(() => { setTimeout(positionButtons, 60); });
+        obs.observe(tablist, {childList: true, subtree: true, attributes: true});
+
+        // initial position
+        setTimeout(positionButtons, 120);
+
+        return true;
+      }
+
+      // intentar varias veces para cuando Streamlit renderice tabs
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        const ok = ensureButtons();
+        if (ok || attempts > 18) {
+          clearInterval(interval);
+        }
+      }, 300);
+    })();
+    </script>
+    """,
+    height=1,
+)
 
 # ---------- Estado de sesión inicial ----------
 if "approved_subjects" not in st.session_state:
