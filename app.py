@@ -72,7 +72,7 @@ with st.spinner("Cargando datos iniciales..."):
         else enfermeria_courses_by_semester
     )
 
-    G = build_curriculum_graph(courses)
+    G = build_curriculum_graph(program, courses)
 
 # Si cambió el programa, limpiar plan / opciones previas para evitar inconsistencias
 if st.session_state.last_program is None:
