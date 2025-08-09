@@ -30,7 +30,6 @@ from curriculum import (
 
 import streamlit.components.v1 as components
 
-# CSS: hacer la barra de tabs scrollable y mejorar el scroll en móvil
 st.markdown(
     """
     <style>
@@ -39,13 +38,14 @@ st.markdown(
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
         white-space: nowrap !important;
+        cursor: grab;
     }
     /* Forzar que los "botones" de la pestaña no se rompan en varias líneas */
     div[role="tablist"] > button, div[role="tablist"] > div > button {
         display: inline-block !important;
         white-space: nowrap !important;
     }
-    /* Mostrar una scrollbar sutil (opcional) */
+    /* Scrollbar sutil */
     div[role="tablist"]::-webkit-scrollbar {
         height: 8px;
     }
@@ -53,85 +53,110 @@ st.markdown(
         background-color: rgba(0,0,0,0.12);
         border-radius: 8px;
     }
+    /* Durante el drag evitamos selección accidental */
+    div[role="tablist"].is-dragging {
+        -webkit-user-select: none !important;
+        -moz-user-select: none !important;
+        -ms-user-select: none !important;
+        user-select: none !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# JS: habilitar drag-to-scroll con mouse y touch
 components.html(
     """
     <script>
     (function() {
       function enableDrag() {
-        // Selecciona el primer elemento que sea rol=tablist (Streamlit tabs)
         const tablist = document.querySelector('div[role="tablist"]');
         if (!tablist) return false;
-
-        // Evitar múltiples attachments
         if (tablist.__dragEnabled) return true;
         tablist.__dragEnabled = true;
 
-        // Estilo de cursor para indicar que se puede arrastrar
-        tablist.style.cursor = 'grab';
+        let isPointerDown = false;
+        let startX = 0;
+        let startY = 0;
+        let scrollLeft = 0;
+        let dragging = false;
+        let pointerId = null;
+        const threshold = 6; // px para considerar que es un drag
 
-        let isDown = false;
-        let startX;
-        let scrollLeft;
-
-        tablist.addEventListener('mousedown', (e) => {
-          isDown = true;
-          tablist.classList.add('active');
-          startX = e.pageX - tablist.offsetLeft;
+        // pointerdown para mouse + touch + pen
+        tablist.addEventListener('pointerdown', (e) => {
+          // solo botón principal
+          if (e.button && e.button !== 0) return;
+          isPointerDown = true;
+          pointerId = e.pointerId;
+          startX = e.clientX;
+          startY = e.clientY;
           scrollLeft = tablist.scrollLeft;
+          dragging = false;
+          try { tablist.setPointerCapture(pointerId); } catch (err) {}
           tablist.style.cursor = 'grabbing';
-        });
+        }, {passive: false});
 
-        tablist.addEventListener('mouseleave', () => {
-          isDown = false;
-          tablist.classList.remove('active');
+        tablist.addEventListener('pointermove', (e) => {
+          if (!isPointerDown) return;
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          // si se mueve horizontalmente más que vertical y supera threshold -> consideramos drag
+          if (!dragging && Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy)) {
+            dragging = true;
+            tablist.classList.add('is-dragging');
+          }
+          if (dragging) {
+            e.preventDefault();
+            tablist.scrollLeft = scrollLeft - dx;
+          }
+        }, {passive: false});
+
+        tablist.addEventListener('pointerup', (e) => {
+          if (pointerId) {
+            try { tablist.releasePointerCapture(pointerId); } catch (err) {}
+          }
+          isPointerDown = false;
           tablist.style.cursor = 'grab';
-        });
+          // Si estabamos arrastrando, suprimir el click inmediato que seguiría al soltar
+          if (dragging) {
+            // añadir un listener capturador de click que solo afecta al siguiente click
+            const suppress = (ev) => {
+              ev.stopPropagation();
+              ev.preventDefault();
+              // removemos este listener inmediatamente
+              tablist.removeEventListener('click', suppress, true);
+            };
+            tablist.addEventListener('click', suppress, true);
+          }
+          dragging = false;
+          tablist.classList.remove('is-dragging');
+          pointerId = null;
+        }, {passive: false});
 
-        tablist.addEventListener('mouseup', () => {
-          isDown = false;
-          tablist.classList.remove('active');
+        // Si el pointer sale del area
+        tablist.addEventListener('pointercancel', (e) => {
+          isPointerDown = false;
+          dragging = false;
+          try { if (pointerId) tablist.releasePointerCapture(pointerId); } catch (err) {}
+          tablist.classList.remove('is-dragging');
           tablist.style.cursor = 'grab';
+          pointerId = null;
         });
-
-        tablist.addEventListener('mousemove', (e) => {
-          if (!isDown) return;
-          e.preventDefault();
-          const x = e.pageX - tablist.offsetLeft;
-          const walk = (x - startX) * 1; // factor de velocidad
-          tablist.scrollLeft = scrollLeft - walk;
-        });
-
-        // Touch support (móviles)
-        let touchStartX = 0;
-        let touchStartScroll = 0;
-        tablist.addEventListener('touchstart', (e) => {
-          touchStartX = e.touches[0].pageX;
-          touchStartScroll = tablist.scrollLeft;
-        }, {passive: true});
-        tablist.addEventListener('touchmove', (e) => {
-          const x = e.touches[0].pageX;
-          tablist.scrollLeft = touchStartScroll - (x - touchStartX);
-        }, {passive: true});
 
         return true;
       }
 
       // Intentar varias veces por si Streamlit renderiza tabs después
       let attempts = 0;
-      const maxAttempts = 12;
+      const maxAttempts = 16;
       const interval = setInterval(() => {
         attempts++;
         const ok = enableDrag();
         if (ok || attempts >= maxAttempts) {
           clearInterval(interval);
         }
-      }, 400);
+      }, 300);
     })();
     </script>
     """,
