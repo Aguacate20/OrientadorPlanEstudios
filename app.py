@@ -296,13 +296,13 @@ if st.session_state.plan:
         inter_credits = semester_plan.get("intersemestral_credits", 0)
 
         st.markdown("**Resumen de créditos (ajustables con opciones actuales):**")
-        st.write(f"- Capacidad efectiva del semestre: **{cap_effective}** créditos")
+        st.write(f"- Créditos disponibles en el semestre: **{cap_effective}** créditos")
         st.write(f"- Créditos recomendados por el plan en este semestre: **{credits_recommended}** créditos")
         if inter_credits:
             st.write(f"- Créditos intersemestrales recomendados (serán considerados como aprobados si se activan): **{inter_credits}** créditos")
         # mostrar gap si cabe
         gap = max(0, cap_effective - (credits_recommended + (inter_credits if inter_credits else 0)))
-        st.write(f"- Hueco (capacidad restante si se aceptan las recomendaciones): **{gap}** créditos")
+        st.write(f"- Créditos sin usar: **{gap}** créditos")
 
         # Mostrar asignaturas recomendadas con créditos (SIEMPRE)
         st.write("**Asignaturas recomendadas (con créditos):**")
