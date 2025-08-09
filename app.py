@@ -1,8 +1,6 @@
 # app.py
 # Interfaz de Streamlit para el orientador de plan de estudios (check + botón)
-# - Muestra créditos por semestre y por asignatura en el plan recomendado.
-# - Añade una barra horizontal simple para desplazamiento de resumen de semestres.
-# - Mantiene HIDE_VALUES para ocultar sólo valores financieros/tiempos.
+# Muestra siempre créditos por semestre y por asignatura (no muestra valores financieros).
 
 import streamlit as st
 import networkx as nx
@@ -31,10 +29,10 @@ from curriculum import (
 )
 
 # ---------------------------
-# UI visual toggle: ocultar valores numéricos (costos/créditos/tiempo)
-# - Nota: créditos SIEMPRE se muestran (según petición), HIDE_VALUES solo oculta tiempos/costos.
+# UI visual toggle: ocultar valores numéricos financieros (costos/tiempos)
+# NOTA: créditos SIEMPRE se muestran.
 # ---------------------------
-HIDE_VALUES = True  # <-- poner False si quieres volver a mostrar todos los números (costos/tiempo)
+HIDE_VALUES = True  # <-- poner False si quieres ver también costs/time para debug (no afecta créditos)
 
 # ---------- Estado de sesión inicial ----------
 if "approved_subjects" not in st.session_state:
@@ -74,7 +72,7 @@ with st.spinner("Cargando datos iniciales..."):
         else enfermeria_courses_by_semester
     )
 
-    # build_curriculum_graph ahora recibe program como primer argumento
+    # build_curriculum_graph recibe program como primer argumento
     G = build_curriculum_graph(program, courses)
 
 # Si cambió el programa, limpiar plan / opciones previas para evitar inconsistencias
@@ -100,11 +98,8 @@ def _current_semester_from_approved():
     return calculate_semester(total_credits_approved), total_credits_approved
 
 current_semester, total_credits_approved = _current_semester_from_approved()
-# Mostrar semestre actual (ocultar créditos si HIDE_VALUES=True) -- pero créditos ya se muestran abajo
-if HIDE_VALUES:
-    st.write(f"**Semestre actual (estimado)**: {current_semester}")
-else:
-    st.write(f"**Semestre actual (estimado)**: {current_semester} (Créditos aprobados: {total_credits_approved})")
+# Mostrar semestre actual (ocultar créditos si HIDE_VALUES=True) - ahora mostramos semestre y créditos aprobados siempre
+st.write(f"**Semestre actual (estimado)**: {current_semester} (Créditos aprobados: {total_credits_approved})")
 
 # ---------- Función para generar/actualizar plan (con medición de tiempo) ----------
 def update_plan():
@@ -141,18 +136,17 @@ def update_plan():
     st.session_state.previous_approved_subjects = st.session_state.approved_subjects.copy()
     st.session_state.last_plan_time = elapsed
 
-    # Sincronizar recomendaciones con opciones UI (si el plan recomendó is_half_time / extra / inter)
+    # Sincronizar recomendaciones para que aparezcan marcadas en semester_options
     for sem_entry in plan:
         sem = sem_entry.get("semester")
         if sem is None:
             continue
         st.session_state.semester_options.setdefault(sem, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
         st.session_state.semester_options[sem]["is_half_time"] = bool(sem_entry.get("is_half_time", False))
-        # mantener extra_credits si el plan sugiere alguno (0 si no)
         st.session_state.semester_options[sem]["extra_credits"] = int(sem_entry.get("extra_credits", 0))
         st.session_state.semester_options[sem]["intersemestral"] = sem_entry.get("intersemestral")
 
-    # Mostrar tiempo si está permitido (HIDE_VALUES controla sólo tiempos/costos)
+    # Mostrar tiempo si no está oculto
     if not HIDE_VALUES:
         st.write(f"⏱️ Tiempo de cálculo del plan: {elapsed:.3f} segundos")
 
@@ -200,29 +194,18 @@ with st.form("approved_form"):
         with st.expander(f"Semestre {semester} ({len(semester_courses)} asignaturas)", expanded=(semester == current_semester)):
             for idx, course in enumerate(semester_courses):
                 key = f"approved_chk_{program}_{semester}_{idx}_{course}"
+                # default ahora se toma de lo guardado en session_state (para mantener persistencia)
                 default = course in st.session_state.approved_subjects
+                # cada checkbox escribe su estado en st.session_state[key]
                 st.checkbox(course, value=default, key=key)
 
     # Botón del formulario: al enviarlo actualizamos los aprobados y generamos plan
+    # Usamos on_click=handle_submit para leer los estados actuales de todos los checkboxes
     st.form_submit_button("Generar plan de estudios", on_click=handle_submit)
 
 # ---------- Mostrar plan en pestañas (si existe) ----------
 if st.session_state.plan:
     st.subheader("Plan de estudios recomendado")
-
-    # Barra horizontal simple de resumen (scrollable) — ayuda a ver semestres altos con mouse
-    # Construimos HTML sencillo; no añade comportamiento, sólo visual.
-    summary_html = '<div style="overflow-x:auto; white-space:nowrap; padding:6px 0; margin-bottom:10px;">'
-    for p in st.session_state.plan:
-        sem = p.get("semester")
-        credits_recom = p.get("credits", 0)
-        inter_credits = p.get("intersemestral_credits", 0)
-        # tarjeta compacta
-        summary_html += f'<div style="display:inline-block; border:1px solid #ddd; border-radius:6px; padding:8px; margin-right:8px; width:220px; background:#fafafa;"><strong>Sem {sem}</strong><br>Créditos: {credits_recom}{(" + inter " + str(inter_credits)) if inter_credits else ""}<br><small>{len(p.get("subjects", []))} asignaturas</small></div>'
-
-    summary_html += '</div>'
-    st.markdown(summary_html, unsafe_allow_html=True)
-
     # Mostrar tiempo de la última generación si no ocultamos valores
     if st.session_state.last_plan_time is not None and not HIDE_VALUES:
         st.info(f"Último cálculo: {st.session_state.last_plan_time:.3f} s")
@@ -237,6 +220,7 @@ if st.session_state.plan:
     labels = [f"Semestre {p['semester']}{' (repetido)' if p.get('repetition', 1) > 1 else ''}" for p in st.session_state.plan]
     tabs = st.tabs(labels)
 
+    # Iteramos sobre el plan calculado para mostrar cada pestaña
     for i, (tab, semester_plan) in enumerate(zip(tabs, st.session_state.plan)):
         with tab:
             semester = semester_plan["semester"]
@@ -245,7 +229,7 @@ if st.session_state.plan:
             # Asegurar entry en semester_options
             st.session_state.semester_options.setdefault(semester, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
 
-            # --- Mostrar opciones (estado viene de semester_options) ---
+            # Media matrícula (estado viene de semester_options)
             half_time_key = f"half_time_{program}_{semester}_{i}"
             is_half_time = st.checkbox(
                 f"Media matrícula (máx {credits_per_semester.get(effective_semester, 0) // 2 - 1} créditos)",
@@ -253,6 +237,7 @@ if st.session_state.plan:
                 key=half_time_key,
             )
 
+            # Créditos extra (slider)
             max_extra_credits = 1 if is_half_time else max(0, 25 - credits_per_semester.get(effective_semester, 0))
             extra_key = f"extra_credits_{program}_{semester}_{i}"
             extra_credits = st.slider(
@@ -263,7 +248,7 @@ if st.session_state.plan:
                 key=extra_key,
             )
 
-            # ---- Intersemestral: calculado considerando las materias recomendadas de este semestre ----
+            # Intersemestral: calculado teniendo en cuenta materias recomendadas en ese semestre
             temp_approved_for_inter = set(st.session_state.approved_subjects)
             rec_subjects_for_this_sem = semester_plan.get("subjects", [])
             temp_approved_for_inter.update(rec_subjects_for_this_sem)
@@ -293,38 +278,49 @@ if st.session_state.plan:
                 "intersemestral": intersemestral_selected if intersemestral_selected != "Ninguno" else None,
             }
 
-            # --- Mostrar créditos (SIEMPRE visibles aunque HIDE_VALUES=True) ---
-            # calcular capacidad efectiva con las reglas existentes
+            # ------------------ Mostrar créditos (SIEMPRE) ------------------
+            # Calcular capacidad efectiva del semestre según opciones actuales guardadas en session_state
             base_cap = credits_per_semester.get(effective_semester, 0)
             opts = st.session_state.semester_options.get(semester, {})
+            cap_effective = base_cap
             if opts.get("is_half_time"):
-                effective_cap = max(0, base_cap // 2 - 1)
-            else:
-                effective_cap = base_cap
-            effective_cap += int(opts.get("extra_credits", 0)) if opts else 0
+                cap_effective = max(0, base_cap // 2 - 1)
+            cap_effective += int(opts.get("extra_credits", 0)) if opts else 0
 
+            # Créditos que el plan recomienda en ese semestre (sujeto a que el plan haya sido recalculado)
             credits_recommended = semester_plan.get("credits", 0)
-            inter_credits = semester_plan.get("intersemestral_credits", 0) or 0
+            inter_credits = semester_plan.get("intersemestral_credits", 0)
 
-            st.markdown(f"**Créditos recomendados en este semestre**: {credits_recommended}  \n**Capacidad actual (según opciones)**: {effective_cap}  \n**Intersemestral (créditos)**: {inter_credits}")
+            st.markdown("**Resumen de créditos (ajustables con opciones actuales):**")
+            st.write(f"- Capacidad efectiva del semestre: **{cap_effective}** créditos")
+            st.write(f"- Créditos recomendados por el plan en este semestre: **{credits_recommended}** créditos")
+            if inter_credits:
+                st.write(f"- Créditos intersemestrales recomendados (serán considerados como aprobados si se activan): **{inter_credits}** créditos")
+            # mostrar gap si cabe
+            gap = max(0, cap_effective - (credits_recommended + (inter_credits if inter_credits else 0)))
+            st.write(f"- Hueco (capacidad restante si se aceptan las recomendaciones): **{gap}** créditos")
 
-            # Indicar si media matrícula está activada
-            if st.session_state.semester_options[semester].get("is_half_time"):
-                st.info("Media matrícula activada para este semestre.")
-
-            # Mostrar la lista de asignaturas con créditos (siempre)
-            st.write("**Asignaturas recomendadas (con créditos)**:")
+            # Mostrar asignaturas recomendadas con créditos (SIEMPRE)
+            st.write("**Asignaturas recomendadas (con créditos):**")
             for subject in semester_plan.get("subjects", []):
                 credits = G.nodes[subject]["credits"] if subject in G.nodes else "?"
-                st.write(f"- {subject} — {credits} créditos")
+                st.write(f"- {subject} — **{credits}** créditos")
 
-            # Mostrar la intersemestral específica (si aplica)
-            if st.session_state.semester_options[semester].get("intersemestral"):
-                inters = st.session_state.semester_options[semester]["intersemestral"]
-                inter_cred = G.nodes[inters]["credits"] if inters in G.nodes else 0
-                st.write(f"**Intersemestral seleccionado**: {inters} — {inter_cred} créditos")
+            # Mostrar la intersemestral recomendada (si existe), indicando sus créditos
+            if semester_plan.get("intersemestral"):
+                intername = semester_plan.get("intersemestral")
+                intercr = G.nodes[intername]["credits"] if intername in G.nodes else 0
+                st.write(f"**Intersemestral recomendado por el plan:** {intername} — **{intercr}** créditos")
 
-    # Mostrar costo total solo si está permitido
+            # Mensajes no financieros relacionados (si HIDE_VALUES True no mostramos costos)
+            if not HIDE_VALUES:
+                st.write(f"**Costo**: ${semester_plan.get('cost', 0):,.0f}")
+                if semester_plan.get("is_half_time"):
+                    st.write("**Media matrícula** (recomendada para optimizar costos)")
+                if semester_plan.get("extra_credits", 0) > 0:
+                    st.write(f"**Créditos extra recomendados**: {semester_plan['extra_credits']}")
+
+    # No mostramos costo total si HIDE_VALUES True
     if not HIDE_VALUES:
         st.write(f"**Costo total estimado**: ${st.session_state.total_cost:,.0f}")
 else:
