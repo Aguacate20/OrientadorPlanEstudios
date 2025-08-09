@@ -17,9 +17,9 @@ from typing import Iterable, List, Tuple, Dict, Any, Set
 # -------------------------
 # Parámetros ajustables
 # -------------------------
-HALF_CONSIDER_GAP_THRESHOLD = 5      # considerar media matrícula sólo si gap (full-time) >= este valor
+HALF_CONSIDER_GAP_THRESHOLD = 3      # considerar media matrícula sólo si gap (full-time) >= este valor
 HALF_COST_SAVINGS_THRESHOLD = 0.05   # requerir al menos este % de ahorro para elegir media matrícula
-MAX_LOOKAHEAD = 2                    # semestres a mirar adelante en la heurística
+MAX_LOOKAHEAD = 10                    # semestres a mirar adelante en la heurística
 TRANSITIVE_WEIGHT = 1.0              # peso que se suma al score por unlock transitivo
 MAX_TRANS_DEPTH = 6                  # profundidad máxima para exploración transitive unlock
 WEIGHT_BY_CREDITS = True             # usar créditos en vez de contar materias en unlock score
