@@ -28,6 +28,116 @@ from curriculum import (
     get_intersemestral_options,
 )
 
+import streamlit.components.v1 as components
+
+# CSS: hacer la barra de tabs scrollable y mejorar el scroll en móvil
+st.markdown(
+    """
+    <style>
+    /* Contenedor de pestañas: permitir scroll horizontal y touch-smooth */
+    div[role="tablist"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        white-space: nowrap !important;
+    }
+    /* Forzar que los "botones" de la pestaña no se rompan en varias líneas */
+    div[role="tablist"] > button, div[role="tablist"] > div > button {
+        display: inline-block !important;
+        white-space: nowrap !important;
+    }
+    /* Mostrar una scrollbar sutil (opcional) */
+    div[role="tablist"]::-webkit-scrollbar {
+        height: 8px;
+    }
+    div[role="tablist"]::-webkit-scrollbar-thumb {
+        background-color: rgba(0,0,0,0.12);
+        border-radius: 8px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# JS: habilitar drag-to-scroll con mouse y touch
+components.html(
+    """
+    <script>
+    (function() {
+      function enableDrag() {
+        // Selecciona el primer elemento que sea rol=tablist (Streamlit tabs)
+        const tablist = document.querySelector('div[role="tablist"]');
+        if (!tablist) return false;
+
+        // Evitar múltiples attachments
+        if (tablist.__dragEnabled) return true;
+        tablist.__dragEnabled = true;
+
+        // Estilo de cursor para indicar que se puede arrastrar
+        tablist.style.cursor = 'grab';
+
+        let isDown = false;
+        let startX;
+        let scrollLeft;
+
+        tablist.addEventListener('mousedown', (e) => {
+          isDown = true;
+          tablist.classList.add('active');
+          startX = e.pageX - tablist.offsetLeft;
+          scrollLeft = tablist.scrollLeft;
+          tablist.style.cursor = 'grabbing';
+        });
+
+        tablist.addEventListener('mouseleave', () => {
+          isDown = false;
+          tablist.classList.remove('active');
+          tablist.style.cursor = 'grab';
+        });
+
+        tablist.addEventListener('mouseup', () => {
+          isDown = false;
+          tablist.classList.remove('active');
+          tablist.style.cursor = 'grab';
+        });
+
+        tablist.addEventListener('mousemove', (e) => {
+          if (!isDown) return;
+          e.preventDefault();
+          const x = e.pageX - tablist.offsetLeft;
+          const walk = (x - startX) * 1; // factor de velocidad
+          tablist.scrollLeft = scrollLeft - walk;
+        });
+
+        // Touch support (móviles)
+        let touchStartX = 0;
+        let touchStartScroll = 0;
+        tablist.addEventListener('touchstart', (e) => {
+          touchStartX = e.touches[0].pageX;
+          touchStartScroll = tablist.scrollLeft;
+        }, {passive: true});
+        tablist.addEventListener('touchmove', (e) => {
+          const x = e.touches[0].pageX;
+          tablist.scrollLeft = touchStartScroll - (x - touchStartX);
+        }, {passive: true});
+
+        return true;
+      }
+
+      // Intentar varias veces por si Streamlit renderiza tabs después
+      let attempts = 0;
+      const maxAttempts = 12;
+      const interval = setInterval(() => {
+        attempts++;
+        const ok = enableDrag();
+        if (ok || attempts >= maxAttempts) {
+          clearInterval(interval);
+        }
+      }, 400);
+    })();
+    </script>
+    """,
+    height=1,
+)
+
 # ---------------------------
 # UI visual toggle: ocultar valores numéricos financieros (costos/tiempos)
 # NOTA: créditos SIEMPRE se muestran.
