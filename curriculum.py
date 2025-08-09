@@ -1,14 +1,12 @@
 # curriculum.py
-# Strategy: greedy lookahead con reglas de prioridad ajustadas.
-# Ahora: media matrícula solo se considera si gap >= HALF_CONSIDER_GAP_THRESHOLD
-#       y además reduce el coste proyectado al menos en HALF_COST_SAVINGS_THRESHOLD.
+# Greedy con lookahead + transitive unlock score (weight_by_credits=True)
+# - Prioriza llenar semestre, luego reducir semestres, luego costo (lexicográfico).
+# - Prioridad absoluta a materias mandatorias (Inglés / Core Currículum).
+# - Packing final para aprovechar huecos (prioriza mandatorias).
+# - Media matrícula se considera según umbrales (v. parámetros).
+# - Nuevo: _transitive_unlock_score que valora cadenas largas de prerrequisitos.
 #
-# Mantiene:
-# - Prioridad a materias mandatorias (Inglés / Core Currículum)
-# - Packing final para usar huecos pequeños
-# - Intersemestrales solo si reducen semestres totales
-# - Penalidad por gap: GAP_PENALTY_PER_CREDIT
-# - Métrica lexicográfica: (gap, estimated_semesters, cost) — prioriza reducir semestres
+# Ajustes configurables al principio del archivo.
 
 import networkx as nx
 import streamlit as st
@@ -19,9 +17,12 @@ from typing import Iterable, List, Tuple, Dict, Any, Set
 # -------------------------
 # Parámetros ajustables
 # -------------------------
-HALF_CONSIDER_GAP_THRESHOLD = 3      # considerar media matrícula solo si gap (full-time) >= este valor
+HALF_CONSIDER_GAP_THRESHOLD = 5      # considerar media matrícula sólo si gap (full-time) >= este valor
 HALF_COST_SAVINGS_THRESHOLD = 0.05   # requerir al menos este % de ahorro para elegir media matrícula
-MAX_LOOKAHEAD = 10                    # semestres a mirar adelante en la heurística
+MAX_LOOKAHEAD = 2                    # semestres a mirar adelante en la heurística
+TRANSITIVE_WEIGHT = 1.0              # peso que se suma al score por unlock transitivo
+MAX_TRANS_DEPTH = 6                  # profundidad máxima para exploración transitive unlock
+WEIGHT_BY_CREDITS = True             # usar créditos en vez de contar materias en unlock score
 
 # -------------------------
 # Helper: nombre mandatorio
@@ -30,17 +31,16 @@ def is_mandatory_name(name: str) -> bool:
     """True si la materia es Inglés o Core Currículum (prioridad especial)."""
     return ("Inglés" in name) or ("Core Currículum" in name) or ("Core Curriculum" in name)
 
-# --------------------------------------------------
-# Construcción del grafo y utilidades básicas
-# --------------------------------------------------
 
+# --------------------------------------------------
+# Construcción del grafo (cacheada por 'program' para separar carreras)
+# --------------------------------------------------
 @st.cache_resource
 def build_curriculum_graph(program: str, _courses: Dict[str, Dict[str, Any]]) -> nx.DiGraph:
     """
     Construye un grafo dirigido con nodos = materias y aristas = prerequisitos/corequisitos.
     Cacheado por `program` para asegurar que cada carrera tenga su propio grafo independiente.
     """
-    # Nota: `program` es usado sólo para el cache-key y para almacenar metadata en el grafo.
     G = nx.DiGraph()
     for course, info in _courses.items():
         credits = info.get("credits", 0)
@@ -50,9 +50,9 @@ def build_curriculum_graph(program: str, _courses: Dict[str, Dict[str, Any]]) ->
             G.add_edge(prereq, course, type="prerequisite")
         for coreq in info.get("corerequisites", []):
             G.add_edge(coreq, course, type="corequisite")
-    # Guardar el programa en metadata por si interesa (debug / inspección)
     G.graph["program"] = program
     return G
+
 
 def _normalize_approved(approved_subjects: Iterable[str]) -> Tuple[str, ...]:
     if approved_subjects is None:
@@ -62,7 +62,13 @@ def _normalize_approved(approved_subjects: Iterable[str]) -> Tuple[str, ...]:
     return tuple(approved_subjects)
 
 
+# --------------------------------------------------
+# Disponibilidad e intersemestral
+# --------------------------------------------------
 def get_available_subjects(_G: nx.DiGraph, approved_subjects: Tuple[str, ...], current_semester: int) -> List[str]:
+    """
+    Devuelve la lista de asignaturas disponibles (cumplen prereqs y coreqs) hasta el semestre current_semester+1.
+    """
     approved = set(approved_subjects)
     available: List[str] = []
 
@@ -91,7 +97,7 @@ def get_available_subjects(_G: nx.DiGraph, approved_subjects: Tuple[str, ...], c
             continue
 
         course_sem = _G.nodes[course].get("semester", 99)
-        # mandar mandatorias al frente
+        # mandar mandatorias al frente para priorizarlas
         if is_mandatory_name(course) and course_sem <= current_semester:
             available.insert(0, course)
         elif course_sem <= current_semester + 1:
@@ -101,6 +107,10 @@ def get_available_subjects(_G: nx.DiGraph, approved_subjects: Tuple[str, ...], c
 
 
 def get_intersemestral_options(_G: nx.DiGraph, approved_subjects: Tuple[str, ...]) -> List[str]:
+    """
+    Devuelve las materias susceptibles de ser cursadas en intersemestral
+    (por ahora: materias tipo Inglés y Precálculo) si se cumplen prerequisitos.
+    """
     approved = set(approved_subjects)
     intersemestral = []
     for course in _G.nodes:
@@ -116,22 +126,51 @@ def get_intersemestral_options(_G: nx.DiGraph, approved_subjects: Tuple[str, ...
 
 
 # --------------------------------------------------
-# Helpers para la estrategia greedy con lookahead
+# Helpers: coreqs, packing y estimación de semestres
 # --------------------------------------------------
+def _collect_coreqs_to_take(G: nx.DiGraph, course: str, approved_set: Set[str], available_this_sem: Set[str]) -> Set[str]:
+    coreqs = set()
+    preds = list(G.predecessors(course))
+    for p in preds:
+        if G[p][course].get("type") == "corequisite":
+            if p not in approved_set and p in available_this_sem:
+                coreqs.add(p)
+    return coreqs
 
-def _build_capacity_by_semester(credits_per_semester: Dict[int, int], semester_options: Dict[int, Dict[str, Any]], semester_range: List[int]) -> Dict[int, int]:
-    capacities = {}
-    for s in semester_range:
-        base = credits_per_semester.get(min(s, 10), 0)
-        opts = semester_options.get(s, {}) if semester_options else {}
-        if opts.get("is_half_time"):
-            cap = max(0, base // 2 - 1)
-        else:
-            cap = base
-        extra = opts.get("extra_credits", 0) if opts else 0
-        cap = max(0, cap + int(extra))
-        capacities[s] = cap
-    return capacities
+
+def _pack_additional_courses(G: nx.DiGraph, approved_set: Set[str], selected: List[str], available_set: List[str], remaining: int, current_sem: int) -> Tuple[List[str], int]:
+    """
+    Intentar llenar la capacidad restante 'remaining' añadiendo materias pequeñas disponibles.
+    Prioridad: mandatorias (Inglés/Core) primero, luego nominales, luego mayor crédito.
+    Devuelve (selected_updated, added_credits).
+    """
+    if remaining <= 0:
+        return selected, 0
+
+    added = 0
+    pack_candidates = []
+    for c in available_set:
+        if c in selected or c in approved_set:
+            continue
+        coreqs = _collect_coreqs_to_take(G, c, approved_set.union(selected), set(available_set))
+        need_set = {c} | coreqs
+        need_credits = sum(G.nodes[n].get("credits", 0) for n in need_set)
+        if need_credits <= remaining:
+            is_mand = 1 if is_mandatory_name(c) else 0
+            is_nominal = 1 if G.nodes[c].get("semester") == current_sem else 0
+            pack_candidates.append((is_mand, is_nominal, need_credits, c, need_set))
+    # ordenar: mandatorias primero, luego nominales, luego mayor créditos, luego semestre asc
+    pack_candidates.sort(key=lambda x: (-x[0], -x[1], -x[2], G.nodes[x[3]].get("semester", 99)))
+    for is_mand, is_nom, need_credits, c, need_set in pack_candidates:
+        if need_credits <= remaining:
+            for n in need_set:
+                if n not in selected:
+                    selected.append(n)
+            remaining -= need_credits
+            added += need_credits
+        if remaining <= 0:
+            break
+    return selected, added
 
 
 def _estimate_remaining_semesters_simulation(
@@ -143,6 +182,10 @@ def _estimate_remaining_semesters_simulation(
     start_semester: int,
     max_semester: int = 20,
 ) -> int:
+    """
+    Simulación rápida que resta créditos por semestre usando capacities (incluye extra_credits).
+    Devuelve número de semestres necesarios desde start_semester (no cuenta el semestre actual).
+    """
     approved_sum = sum(G.nodes[c]["credits"] for c in approved_subjects if c in G.nodes)
     remaining = max(0, total_credits_required - approved_sum)
     if remaining == 0:
@@ -169,45 +212,72 @@ def _estimate_remaining_semesters_simulation(
     return sems if remaining <= 0 else sems + math.ceil(remaining / max(1, credits_per_semester.get(10, base)))
 
 
-def _collect_coreqs_to_take(G: nx.DiGraph, course: str, approved_set: Set[str], available_this_sem: Set[str]) -> Set[str]:
-    coreqs = set()
-    preds = list(G.predecessors(course))
-    for p in preds:
-        if G[p][course].get("type") == "corequisite":
-            if p not in approved_set and p in available_this_sem:
-                coreqs.add(p)
-    return coreqs
+# --------------------------------------------------
+# Nuevo: transitive unlock score
+# --------------------------------------------------
+def _transitive_unlock_score(G: nx.DiGraph, candidate: str, approved_set: Set[str], available_set: Set[str], max_depth: int = MAX_TRANS_DEPTH, weight_by_credits: bool = WEIGHT_BY_CREDITS) -> float:
+    """
+    Simula aprobar `candidate` (y sus coreqs inmediatos si están en available_set),
+    y calcula cuántas materias quedan desbloqueadas transitivamente.
+    Devuelve una puntuación ponderada por profundidad (más cerca = mayor peso).
+    Si weight_by_credits=True suma créditos (decay por distancia).
+    """
+    sim_approved = set(approved_set)
+    sim_queue = []
 
+    # agregar candidate y sus coreqs disponibles (optimista)
+    sim_approved.add(candidate)
+    sim_queue.append(candidate)
+    for p in G.predecessors(candidate):
+        if G[p][candidate].get("type") == "corequisite":
+            if p in available_set:
+                sim_approved.add(p)
+                sim_queue.append(p)
 
-def _pack_additional_courses(G: nx.DiGraph, approved_set: Set[str], selected: List[str], available_set: List[str], remaining: int, current_sem: int) -> Tuple[List[str], int]:
-    if remaining <= 0:
-        return selected, 0
+    score = 0.0
+    visited_new = set()
+    depth = 1
 
-    added = 0
-    pack_candidates = []
-    for c in available_set:
-        if c in selected or c in approved_set:
-            continue
-        coreqs = _collect_coreqs_to_take(G, c, approved_set.union(selected), set(available_set))
-        need_set = {c} | coreqs
-        need_credits = sum(G.nodes[n].get("credits", 0) for n in need_set)
-        if need_credits <= remaining:
-            is_mand = 1 if is_mandatory_name(c) else 0
-            is_nominal = 1 if G.nodes[c].get("semester") == current_sem else 0
-            pack_candidates.append((is_mand, is_nominal, need_credits, c, need_set))
-    pack_candidates.sort(key=lambda x: (-x[0], -x[1], -x[2], G.nodes[x[3]].get("semester", 99)))
-    for is_mand, is_nom, need_credits, c, need_set in pack_candidates:
-        if need_credits <= remaining:
-            for n in need_set:
-                if n not in selected:
-                    selected.append(n)
-            remaining -= need_credits
-            added += need_credits
-        if remaining <= 0:
+    # BFS conceptual: en cada paso encontramos nodos cuyos prereqs (no-coreqs) están satisfechos
+    while depth <= max_depth:
+        newly_unlocked = set()
+        for node in G.nodes:
+            if node in sim_approved or node in visited_new:
+                continue
+            prereqs = [p for p in G.predecessors(node) if G[p][node].get("type") != "corequisite"]
+            coreqs = [p for p in G.predecessors(node) if G[p][node].get("type") == "corequisite"]
+            # prereqs todos satisfechos?
+            if prereqs and not all(pr in sim_approved for pr in prereqs):
+                continue
+            # coreqs: solo asumimos optimista si están aprobados o en available_set (el candidato podría abrirlos)
+            coreqs_ok = True
+            for cr in coreqs:
+                if cr not in sim_approved and cr not in available_set:
+                    coreqs_ok = False
+                    break
+            if not coreqs_ok:
+                continue
+            newly_unlocked.add(node)
+
+        if not newly_unlocked:
             break
-    return selected, added
+
+        for n in newly_unlocked:
+            sim_approved.add(n)
+            visited_new.add(n)
+            if weight_by_credits:
+                score += G.nodes[n].get("credits", 0) / (depth ** 1.2)
+            else:
+                score += 1.0 / (depth ** 1.2)
+
+        depth += 1
+
+    return float(score)
 
 
+# --------------------------------------------------
+# Selección greedy con lookahead (integra transitive unlock)
+# --------------------------------------------------
 def greedy_select_with_lookahead(
     G: nx.DiGraph,
     approved: List[str],
@@ -217,9 +287,14 @@ def greedy_select_with_lookahead(
     lookahead: int = MAX_LOOKAHEAD,
     favor_fill: bool = True,
 ) -> Tuple[List[str], int]:
+    """
+    Selección greedy con lookahead y puntuación que incluye unlock transitivo.
+    Devuelve (selected_subjects, total_credits).
+    """
     approved_set = set(approved)
     available_set = list(available_subjects)
 
+    # --- Si todas las materias nominales disponibles caben, devolverlas de inmediato ---
     nominal_available = [c for c in available_set if G.nodes[c].get("semester") == current_sem]
     if nominal_available:
         nominal_full_set = set()
@@ -263,13 +338,18 @@ def greedy_select_with_lookahead(
             inc2 = len(next2_avail - baseline_next2) if lookahead >= 2 else 0
             benefit = inc1 * 2 + inc2
 
+            # priorizaciones
             mand_bonus = 0.5 * need_credits if is_mandatory_name(cand) else 0.0
             nominal_bonus = 0.25 * need_credits if G.nodes[cand].get("semester") == current_sem else 0.0
 
+            # transitive unlock score (ponderado por créditos)
+            unlock_score = _transitive_unlock_score(G, cand, approved_set.union(selected), set(available_set), max_depth=MAX_TRANS_DEPTH, weight_by_credits=WEIGHT_BY_CREDITS)
+
             if favor_fill:
-                score = (0.7 * need_credits) + (0.2 * (benefit / max(1, need_credits))) + nominal_bonus + mand_bonus
+                # Score: priorizar créditos (llenar), luego desbloqueo inmediato, añadir unlock_score y bonificaciones
+                score = (0.65 * need_credits) + (0.15 * (benefit / max(1, need_credits))) + nominal_bonus + mand_bonus + TRANSITIVE_WEIGHT * unlock_score
             else:
-                score = (benefit / max(1, need_credits)) + 0.02 * need_credits + nominal_bonus + mand_bonus
+                score = (benefit / max(1, need_credits)) + 0.02 * need_credits + nominal_bonus + mand_bonus + TRANSITIVE_WEIGHT * unlock_score
 
             if score > best_score or (abs(score - best_score) < 1e-9 and need_credits > best_choice_credits):
                 best_score = score
@@ -296,6 +376,7 @@ def greedy_select_with_lookahead(
                 selected.append(n)
         total_credits += best_choice_credits
 
+    # packing interno para llenar restantes
     remaining = credits_limit - total_credits
     if remaining > 0:
         selected, added = _pack_additional_courses(G, approved_set, selected, available_set, remaining, current_sem)
@@ -304,6 +385,9 @@ def greedy_select_with_lookahead(
     return selected, total_credits
 
 
+# --------------------------------------------------
+# Generar plan completo (usa heurística)
+# --------------------------------------------------
 def generate_full_plan(
     _G: nx.DiGraph,
     approved_subjects: Iterable[str],
@@ -312,6 +396,12 @@ def generate_full_plan(
     _calculate_semester,
     semester_options: Dict[int, Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Genera el plan completo con criterio:
+      1) llenar/Acercarse lo máximo posible a la capacidad de cada semestre (packing)
+      2) minimizar número total de semestres (estimado)
+      3) minimizar costo proyectado (penalidad por gap, media matrícula, intersemestral)
+    """
     approved = list(approved_subjects) if approved_subjects is not None else []
     total_credits_approved = sum(_G.nodes[c]["credits"] for c in approved if c in _G.nodes)
     current_semester = _calculate_semester(total_credits_approved)
@@ -329,6 +419,7 @@ def generate_full_plan(
     semester_counts = {}
     max_iterations = 40
 
+    # parámetros económicos
     FULL_COST = 10000000
     HALF_COST = 5000000
     INTER_COST = 1500000
@@ -339,6 +430,7 @@ def generate_full_plan(
 
         base_capacity = _credits_per_semester.get(min(current_sem, 10), 0)
         opts = semester_options.get(current_sem, {}) if semester_options else {}
+        # capacidad sin contar extra_credits (se aplicará si user lo setea)
         if opts.get("is_half_time"):
             capacity = max(0, base_capacity // 2 - 1)
         else:
@@ -353,8 +445,6 @@ def generate_full_plan(
         # tupla: (gap, est_semesters, cost)
         best_metric = (float('inf'), float('inf'), float('inf'))
 
-        # EVALUAR FULL-TIME
-        full_results = None
         def eval_configuration(is_half_time_flag, allow_inter=True):
             if is_half_time_flag:
                 cap_tmp = max(0, base_capacity // 2 - 1)
@@ -366,7 +456,7 @@ def generate_full_plan(
                 _G, approved_local, available_subjects, current_sem, cap_tmp, lookahead=lookahead, favor_fill=True
             )
 
-            # post-pack tentativo para evaluación
+            # post-pack tentativo para evaluar gap real
             subjects_packed = list(subjects_selected)
             credits_packed = credits_selected
             remaining_tmp = cap_tmp - credits_packed
@@ -390,6 +480,7 @@ def generate_full_plan(
                 if credits_packed + inter_credits > cap_tmp:
                     continue
 
+                # regla: solo considerar intersemestral si reduce número total de semestres
                 if inter_choice:
                     temp_approved_with_inter = set(approved_local) | set(subjects_packed) | {inter_choice}
                     remaining_with_inter = _estimate_remaining_semesters_simulation(
@@ -423,6 +514,7 @@ def generate_full_plan(
                 })
             return results
 
+        # evaluar full-time primero
         full_results = eval_configuration(False, allow_inter=True)
         best_full = None
         if full_results:
@@ -436,20 +528,17 @@ def generate_full_plan(
         # Si full-time cubre gap 0 preferir inmediatamente
         if best_sem_config and best_sem_config['gap_after'] == 0:
             chosen_full = best_sem_config
-            # no consideramos media matrícula en este caso
         else:
             # DECISIÓN SOBRE MEDIA MATRÍCULA:
-            # Solo evaluar opción de half-time si el gap del mejor full >= HALF_CONSIDER_GAP_THRESHOLD
             consider_half = False
             if best_full and best_full.get('gap_after', 999) >= HALF_CONSIDER_GAP_THRESHOLD:
                 consider_half = True
 
-            chosen_full = best_sem_config  # guardamos la mejor full tal como está
+            chosen_full = best_sem_config
 
             chosen_half = None
             if consider_half:
                 half_results = eval_configuration(True, allow_inter=True)
-                # buscamos la mejor half
                 best_half_metric = (float('inf'), float('inf'), float('inf'))
                 best_half_candidate = None
                 if half_results:
@@ -458,17 +547,13 @@ def generate_full_plan(
                         if metric < best_half_metric:
                             best_half_metric = metric
                             best_half_candidate = r
-                # ahora: aplicar condición de ahorro
                 if best_half_candidate and best_full:
                     full_cost = best_full.get('projected_total_cost', float('inf'))
                     half_cost = best_half_candidate.get('projected_total_cost', float('inf'))
-                    # solo aceptar half si reduce coste al menos en el umbral relativo
                     if full_cost > 0 and (half_cost <= full_cost * (1.0 - HALF_COST_SAVINGS_THRESHOLD)):
                         chosen_half = best_half_candidate
 
-            # Si hay candidate half válida, compararla lexicográficamente con full
             if chosen_half:
-                # usar la misma tupla de comparación (gap, est_semesters, cost)
                 t_full = (chosen_full['gap_after'], chosen_full['estimated_semesters'], chosen_full['projected_total_cost'])
                 t_half = (chosen_half['gap_after'], chosen_half['estimated_semesters'], chosen_half['projected_total_cost'])
                 if t_half < t_full:
@@ -510,17 +595,19 @@ def generate_full_plan(
             'credits': best_sem_config['credits'],
             'intersemestral_credits': best_sem_config.get('intersemestral_credits', 0),
             'is_half_time': best_sem_config['is_half_time'],
-            'extra_credits': opts.get('extra_credits', 0) if opts else 0,
+            'extra_credits': best_sem_config.get('extra_credits', 0),
             'intersemestral': best_sem_config['intersemestral'],
             'cost': sem_cost,
         })
 
+        # actualizar aprobadas y crédito total
         approved_local.extend(best_sem_config['subjects'])
         if best_sem_config['intersemestral']:
             approved_local.append(best_sem_config['intersemestral'])
         total_credits_local += best_sem_config['credits'] + best_sem_config.get('intersemestral_credits', 0)
         total_cost += sem_cost
 
+        # avanzar semestre en función de créditos totales
         current_sem = _calculate_semester(total_credits_local)
 
         gc.collect()
