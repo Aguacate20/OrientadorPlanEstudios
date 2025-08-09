@@ -1,9 +1,8 @@
 # app.py
 # Interfaz de Streamlit para el orientador de plan de estudios (check + botón)
-# Incluye flechas izquierda/derecha para desplazar el carrusel de pestañas.
+# Muestra créditos por asignatura y por semestre. CSS para hacer las pestañas más anchas/scrollables.
 
 import streamlit as st
-import streamlit.components.v1 as components
 import networkx as nx
 import time
 from courses_data import (
@@ -36,163 +35,42 @@ from curriculum import (
 HIDE_VALUES = True  # <-- poner False si quieres ver también costs/time para debug (no afecta créditos)
 
 # ---------------------------
-# CSS + JS para hacer el tablist desplazable y añadir flechas
+# CSS para mejorar la presentación de las pestañas (para caber hasta 10)
+# - hace que la fila de pestañas sea horizontal-scrollable
+# - reduce padding y font-size de las pestañas para que quepan
+# - aumenta la altura mínima del panel de contenido de cada pestaña
 # ---------------------------
 st.markdown(
     """
     <style>
-    /* Hacemos la fila de tabs desplazable horizontalmente */
-    div[role="tablist"] {
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch !important;
-        white-space: nowrap !important;
-        position: relative;
-        scroll-behavior: smooth;
-    }
-    /* Forzar que los botones de la pestaña no se rompan */
-    div[role="tablist"] > button, div[role="tablist"] > div > button {
-        display: inline-block !important;
-        white-space: nowrap !important;
-    }
-    /* Estilo para los botones de flecha que insertaremos */
-    .tabs-scroll-btn {
-        position: absolute;
-        top: 50%;
-        transform: translateY(-50%);
-        z-index: 9999;
-        background: rgba(255,255,255,0.92);
-        border: 1px solid rgba(0,0,0,0.08);
-        border-radius: 6px;
-        width: 34px;
-        height: 34px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-        cursor: pointer;
-        user-select: none;
-    }
-    .tabs-scroll-btn:active {
-        transform: translateY(-50%) scale(0.98);
-    }
-    .tabs-scroll-btn svg {
-        width: 16px;
-        height: 16px;
-    }
-    .tabs-scroll-left { left: 4px; }
-    .tabs-scroll-right { right: 4px; }
-
-    /* Pequeño ajuste para evitar que los botones cubran totalmente botones de pestañas en pantallas muy pequeñas */
-    @media (max-width: 520px) {
-        .tabs-scroll-btn { width: 30px; height: 30px; }
-    }
+      /* Barra de pestañas: permitir overflow horizontal */
+      div[role="tablist"] {
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 6px;
+      }
+      /* Botones/pestañas: compactar para que quepan más */
+      div[role="tablist"] button[role="tab"] {
+        display: inline-block;
+        padding: 6px 10px;
+        margin-right: 6px;
+        min-width: 88px;
+        font-size: 13px;
+        line-height: 1.1;
+      }
+      /* Panel de contenido: más alto para evitar scroll interno corto */
+      div[role="tabpanel"] {
+        min-height: 600px;
+      }
+      /* En pantallas pequeñas, aseguramos que el tablist sea visible */
+      @media (max-width: 900px) {
+        div[role="tablist"] button[role="tab"] { min-width: 78px; font-size: 12px; padding: 5px 8px; }
+        div[role="tabpanel"] { min-height: 700px; }
+      }
     </style>
     """,
     unsafe_allow_html=True,
-)
-
-# JS: insertar botones de scroll y lógica de click / hold-to-scroll
-components.html(
-    """
-    <script>
-    (function() {
-      function ensureButtons() {
-        const tablist = document.querySelector('div[role="tablist"]');
-        if (!tablist) return false;
-
-        // Evitar reinserciones
-        if (tablist.__scrollButtonsAdded) return true;
-        tablist.__scrollButtonsAdded = true;
-
-        // Crear botón izquierdo
-        const leftBtn = document.createElement('div');
-        leftBtn.className = 'tabs-scroll-btn tabs-scroll-left';
-        leftBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>`;
-        // Crear botón derecho
-        const rightBtn = document.createElement('div');
-        rightBtn.className = 'tabs-scroll-btn tabs-scroll-right';
-        rightBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
-
-        // Insertarlos como hijos del contenedor padre para que se posicionen relativo al tablist
-        // Buscamos el padre más cercano que envuelve el tablist para posicionar relativo a ese contenedor
-        const parent = tablist.parentElement || document.body;
-        parent.style.position = parent.style.position || 'relative';
-        parent.appendChild(leftBtn);
-        parent.appendChild(rightBtn);
-
-        // Posicionar los botones en relación al tablist: calculamos offsetLeft/Right
-        function positionButtons() {
-          const rect = tablist.getBoundingClientRect();
-          const parentRect = parent.getBoundingClientRect();
-          // left: distancia desde el padre al inicio del tablist + pequeño margen
-          leftBtn.style.left = Math.max(4, rect.left - parentRect.left + 4) + 'px';
-          // right: distancia desde el final del tablist hasta el borde derecho del padre - margen
-          rightBtn.style.left = Math.min(parentRect.width - 40, rect.right - parentRect.left - 38) + 'px';
-          // y aseguramos que estén alineados verticalmente al centro del tablist
-          leftBtn.style.top = (rect.top - parentRect.top + rect.height/2) + 'px';
-          rightBtn.style.top = (rect.top - parentRect.top + rect.height/2) + 'px';
-        }
-
-        // Scroll helpers
-        const STEP = 220; // píxeles por click
-        let leftInterval = null;
-        let rightInterval = null;
-
-        function scrollLeftOnce() {
-          tablist.scrollBy({left: -STEP, behavior: 'smooth'});
-        }
-        function scrollRightOnce() {
-          tablist.scrollBy({left: STEP, behavior: 'smooth'});
-        }
-
-        // Click handlers
-        leftBtn.addEventListener('click', (e) => { e.stopPropagation(); scrollLeftOnce(); });
-        rightBtn.addEventListener('click', (e) => { e.stopPropagation(); scrollRightOnce(); });
-
-        // Hold-to-scroll: mantener presionado inicia intervalo
-        leftBtn.addEventListener('mousedown', (e) => {
-          e.preventDefault(); e.stopPropagation();
-          leftInterval = setInterval(() => { tablist.scrollLeft -= 18; }, 20);
-        });
-        leftBtn.addEventListener('mouseup', (e) => { clearInterval(leftInterval); leftInterval = null; });
-        leftBtn.addEventListener('mouseleave', (e) => { clearInterval(leftInterval); leftInterval = null; });
-
-        rightBtn.addEventListener('mousedown', (e) => {
-          e.preventDefault(); e.stopPropagation();
-          rightInterval = setInterval(() => { tablist.scrollLeft += 18; }, 20);
-        });
-        rightBtn.addEventListener('mouseup', (e) => { clearInterval(rightInterval); rightInterval = null; });
-        rightBtn.addEventListener('mouseleave', (e) => { clearInterval(rightInterval); rightInterval = null; });
-
-        // Touch: on touchstart, do single scroll; long press handled by multiple taps or inertia
-        leftBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); tablist.scrollLeft -= STEP; }, {passive: true});
-        rightBtn.addEventListener('touchstart', (e) => { e.stopPropagation(); tablist.scrollLeft += STEP; }, {passive: true});
-
-        // Reposicionar botones si la ventana cambia o el layout cambia
-        window.addEventListener('resize', () => { setTimeout(positionButtons, 60); });
-        // También observar cambios en el tablist y reposicionar
-        const obs = new MutationObserver(() => { setTimeout(positionButtons, 60); });
-        obs.observe(tablist, {childList: true, subtree: true, attributes: true});
-
-        // initial position
-        setTimeout(positionButtons, 120);
-
-        return true;
-      }
-
-      // intentar varias veces para cuando Streamlit renderice tabs
-      let attempts = 0;
-      const interval = setInterval(() => {
-        attempts++;
-        const ok = ensureButtons();
-        if (ok || attempts > 18) {
-          clearInterval(interval);
-        }
-      }, 300);
-    })();
-    </script>
-    """,
-    height=1,
 )
 
 # ---------- Estado de sesión inicial ----------
@@ -259,7 +137,7 @@ def _current_semester_from_approved():
     return calculate_semester(total_credits_approved), total_credits_approved
 
 current_semester, total_credits_approved = _current_semester_from_approved()
-# Mostrar semestre actual (ocultar créditos si HIDE_VALUES=True) - ahora mostramos semestre y créditos aprobados siempre
+# Mostrar semestre actual y créditos aprobados
 st.write(f"**Semestre actual (estimado)**: {current_semester} (Créditos aprobados: {total_credits_approved})")
 
 # ---------- Función para generar/actualizar plan (con medición de tiempo) ----------
