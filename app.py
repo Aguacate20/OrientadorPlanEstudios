@@ -30,138 +30,157 @@ from curriculum import (
 
 import streamlit.components.v1 as components
 
-st.markdown(
+components.html(
     """
     <style>
-    /* Contenedor de pestañas: permitir scroll horizontal y touch-smooth */
+    /* Hacer la barra de tabs scrollable horizontalmente */
     div[role="tablist"] {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
         white-space: nowrap !important;
-        cursor: grab;
+        position: relative;
     }
-    /* Forzar que los "botones" de la pestaña no se rompan en varias líneas */
     div[role="tablist"] > button, div[role="tablist"] > div > button {
         display: inline-block !important;
         white-space: nowrap !important;
     }
-    /* Scrollbar sutil */
-    div[role="tablist"]::-webkit-scrollbar {
-        height: 8px;
-    }
-    div[role="tablist"]::-webkit-scrollbar-thumb {
-        background-color: rgba(0,0,0,0.12);
-        border-radius: 8px;
-    }
-    /* Durante el drag evitamos selección accidental */
-    div[role="tablist"].is-dragging {
-        -webkit-user-select: none !important;
-        -moz-user-select: none !important;
-        -ms-user-select: none !important;
-        user-select: none !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
-components.html(
-    """
+    /* Estilo de las flechas overlay */
+    .tab-scroll-btn {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 36px;
+        height: 36px;
+        border-radius: 18px;
+        background: rgba(0,0,0,0.12);
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        z-index: 9999;
+        backdrop-filter: blur(4px);
+    }
+    .tab-scroll-btn:hover {
+        background: rgba(0,0,0,0.18);
+    }
+    .tab-scroll-left { left: 6px; }
+    .tab-scroll-right { right: 6px; }
+    .tab-scroll-btn svg { width: 18px; height: 18px; fill: rgba(0,0,0,0.8); }
+    </style>
+
     <script>
     (function() {
-      function enableDrag() {
+      function attachControls() {
         const tablist = document.querySelector('div[role="tablist"]');
         if (!tablist) return false;
-        if (tablist.__dragEnabled) return true;
-        tablist.__dragEnabled = true;
 
-        let isPointerDown = false;
+        // evitar duplicados
+        if (tablist.__controlsAttached) return true;
+        tablist.__controlsAttached = true;
+
+        // asegurar position:relative en el contenedor que vamos a usar (si no existe)
+        const parent = tablist;
+        if (getComputedStyle(parent).position === 'static') {
+          parent.style.position = 'relative';
+        }
+
+        // --- Crear botones ---
+        const leftBtn = document.createElement('button');
+        leftBtn.className = 'tab-scroll-btn tab-scroll-left';
+        leftBtn.title = 'Scroll left';
+        leftBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>';
+        const rightBtn = document.createElement('button');
+        rightBtn.className = 'tab-scroll-btn tab-scroll-right';
+        rightBtn.title = 'Scroll right';
+        rightBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>';
+
+        // añadir pero invisibles inicialmente si no hace falta
+        parent.appendChild(leftBtn);
+        parent.appendChild(rightBtn);
+
+        // función de scroll suave
+        function scrollByAmount(amount) {
+          tablist.scrollBy({ left: amount, behavior: 'smooth' });
+        }
+
+        leftBtn.addEventListener('click', () => {
+          scrollByAmount(-Math.max(120, Math.floor(tablist.clientWidth * 0.4)));
+        });
+        rightBtn.addEventListener('click', () => {
+          scrollByAmount(Math.max(120, Math.floor(tablist.clientWidth * 0.4)));
+        });
+
+        // mostrar/ocultar botones según overflow
+        function updateButtonsVisibility() {
+          if (tablist.scrollWidth > tablist.clientWidth + 2) {
+            leftBtn.style.display = 'flex';
+            rightBtn.style.display = 'flex';
+          } else {
+            leftBtn.style.display = 'none';
+            rightBtn.style.display = 'none';
+          }
+        }
+
+        // mejorar drag-to-scroll con pointer events (mouse + touch)
+        let isDown = false;
         let startX = 0;
-        let startY = 0;
         let scrollLeft = 0;
-        let dragging = false;
-        let pointerId = null;
-        const threshold = 6; // px para considerar que es un drag
 
-        // pointerdown para mouse + touch + pen
         tablist.addEventListener('pointerdown', (e) => {
-          // solo botón principal
-          if (e.button && e.button !== 0) return;
-          isPointerDown = true;
-          pointerId = e.pointerId;
+          // solo si clic en área no interactiva (evitar interferir al clicar la propia tab)
+          isDown = true;
+          tablist.setPointerCapture(e.pointerId);
           startX = e.clientX;
-          startY = e.clientY;
           scrollLeft = tablist.scrollLeft;
-          dragging = false;
-          try { tablist.setPointerCapture(pointerId); } catch (err) {}
           tablist.style.cursor = 'grabbing';
-        }, {passive: false});
+        });
 
         tablist.addEventListener('pointermove', (e) => {
-          if (!isPointerDown) return;
-          const dx = e.clientX - startX;
-          const dy = e.clientY - startY;
-          // si se mueve horizontalmente más que vertical y supera threshold -> consideramos drag
-          if (!dragging && Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy)) {
-            dragging = true;
-            tablist.classList.add('is-dragging');
-          }
-          if (dragging) {
-            e.preventDefault();
-            tablist.scrollLeft = scrollLeft - dx;
-          }
-        }, {passive: false});
-
-        tablist.addEventListener('pointerup', (e) => {
-          if (pointerId) {
-            try { tablist.releasePointerCapture(pointerId); } catch (err) {}
-          }
-          isPointerDown = false;
-          tablist.style.cursor = 'grab';
-          // Si estabamos arrastrando, suprimir el click inmediato que seguiría al soltar
-          if (dragging) {
-            // añadir un listener capturador de click que solo afecta al siguiente click
-            const suppress = (ev) => {
-              ev.stopPropagation();
-              ev.preventDefault();
-              // removemos este listener inmediatamente
-              tablist.removeEventListener('click', suppress, true);
-            };
-            tablist.addEventListener('click', suppress, true);
-          }
-          dragging = false;
-          tablist.classList.remove('is-dragging');
-          pointerId = null;
-        }, {passive: false});
-
-        // Si el pointer sale del area
-        tablist.addEventListener('pointercancel', (e) => {
-          isPointerDown = false;
-          dragging = false;
-          try { if (pointerId) tablist.releasePointerCapture(pointerId); } catch (err) {}
-          tablist.classList.remove('is-dragging');
-          tablist.style.cursor = 'grab';
-          pointerId = null;
+          if (!isDown) return;
+          e.preventDefault();
+          const x = e.clientX;
+          const walk = (x - startX) * 1; // velocidad
+          tablist.scrollLeft = scrollLeft - walk;
         });
+
+        function endDrag(e) {
+          if (!isDown) return;
+          isDown = false;
+          try { tablist.releasePointerCapture(e.pointerId); } catch (_) {}
+          tablist.style.cursor = 'grab';
+        }
+
+        tablist.addEventListener('pointerup', endDrag);
+        tablist.addEventListener('pointercancel', endDrag);
+        tablist.addEventListener('pointerleave', endDrag);
+
+        // touch native scrolling still works; pointer handling above supports click-drag
+        // actualizar visibility y posicion en resize/scroll
+        window.addEventListener('resize', updateButtonsVisibility);
+        tablist.addEventListener('scroll', updateButtonsVisibility);
+
+        // intentar inicializar visibilidad un tick después (DOM puede cambiar)
+        setTimeout(updateButtonsVisibility, 200);
+        setTimeout(updateButtonsVisibility, 800);
 
         return true;
       }
 
-      // Intentar varias veces por si Streamlit renderiza tabs después
-      let attempts = 0;
-      const maxAttempts = 16;
+      // reintentar varias veces porque Streamlit puede renderizar tabs después
+      let tries = 0;
+      const maxTries = 20;
       const interval = setInterval(() => {
-        attempts++;
-        const ok = enableDrag();
-        if (ok || attempts >= maxAttempts) {
-          clearInterval(interval);
-        }
+        tries++;
+        const ok = attachControls();
+        if (ok || tries >= maxTries) clearInterval(interval);
       }, 300);
     })();
     </script>
     """,
     height=1,
-)
+    )
 
 # ---------------------------
 # UI visual toggle: ocultar valores numéricos financieros (costos/tiempos)
