@@ -5,6 +5,7 @@
 import streamlit as st
 import networkx as nx
 import time
+from typing import Dict, Any
 from courses_data import (
     fisioterapia_courses,
     enfermeria_courses,
