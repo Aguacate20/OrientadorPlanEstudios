@@ -19,7 +19,7 @@ from typing import Iterable, List, Tuple, Dict, Any, Set
 # -------------------------
 # Parámetros ajustables
 # -------------------------
-HALF_CONSIDER_GAP_THRESHOLD = 3      # considerar media matrícula solo si gap (full-time) >= este valor
+HALF_CONSIDER_GAP_THRESHOLD = 4      # considerar media matrícula solo si gap (full-time) >= este valor
 HALF_COST_SAVINGS_THRESHOLD = 0.05   # requerir al menos este % de ahorro para elegir media matrícula
 MAX_LOOKAHEAD = 2                    # semestres a mirar adelante en la heurística
 
