@@ -218,15 +218,8 @@ if st.session_state.plan:
         credits_recom = p.get("credits", 0)
         inter_credits = p.get("intersemestral_credits", 0)
         # tarjeta compacta
-        summary_html += (
-            f'<div style="display:inline-block; border:1px solid #ddd; border-radius:6px; '
-            f'padding:8px; margin-right:8px; width:220px; background:#fafafa;">'
-            f'<strong>Sem {sem}</strong><br>'
-            f'Créditos: {credits_recom}'
-            + (f' + inter {inter_credits}' if inter_credits else '')
-            f'<br><small>{len(p.get("subjects", []))} asignaturas</small>'
-            f'</div>'
-        )
+        summary_html += f'<div style="display:inline-block; border:1px solid #ddd; border-radius:6px; padding:8px; margin-right:8px; width:220px; background:#fafafa;"><strong>Sem {sem}</strong><br>Créditos: {credits_recom}{(" + inter " + str(inter_credits)) if inter_credits else ""}<br><small>{len(p.get("subjects", []))} asignaturas</small></div>'
+
     summary_html += '</div>'
     st.markdown(summary_html, unsafe_allow_html=True)
 
