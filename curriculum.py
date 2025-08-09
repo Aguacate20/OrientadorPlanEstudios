@@ -21,7 +21,7 @@ from typing import Iterable, List, Tuple, Dict, Any, Set
 # -------------------------
 HALF_CONSIDER_GAP_THRESHOLD = 3      # considerar media matrícula solo si gap (full-time) >= este valor
 HALF_COST_SAVINGS_THRESHOLD = 0.05   # requerir al menos este % de ahorro para elegir media matrícula
-MAX_LOOKAHEAD = 2                    # semestres a mirar adelante en la heurística
+MAX_LOOKAHEAD = 10                    # semestres a mirar adelante en la heurística
 
 # -------------------------
 # Helper: nombre mandatorio
