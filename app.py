@@ -305,7 +305,7 @@ if st.session_state.plan:
         st.write(f"- Créditos sin usar: **{gap}** créditos")
 
         # Mostrar asignaturas recomendadas con créditos (SIEMPRE)
-        st.write("**Asignaturas recomendadas (con créditos):**")
+        st.write("**Asignaturas recomendadas:**")
         for subject in semester_plan.get("subjects", []):
             credits = G.nodes[subject]["credits"] if subject in G.nodes else "?"
             st.write(f"- {subject} — **{credits}** créditos")
