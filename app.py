@@ -1,6 +1,6 @@
 # app.py
 # Interfaz de Streamlit para el orientador de plan de estudios (check + botón)
-# Muestra créditos por asignatura y por semestre. CSS para hacer las pestañas más anchas/scrollables.
+# Mejora: si hay muchas pestañas, mostramos un selectbox para garantizar acceso a semestres altos.
 
 import streamlit as st
 import networkx as nx
@@ -34,44 +34,8 @@ from curriculum import (
 # ---------------------------
 HIDE_VALUES = True  # <-- poner False si quieres ver también costs/time para debug (no afecta créditos)
 
-# ---------------------------
-# CSS para mejorar la presentación de las pestañas (para caber hasta 10)
-# - hace que la fila de pestañas sea horizontal-scrollable
-# - reduce padding y font-size de las pestañas para que quepan
-# - aumenta la altura mínima del panel de contenido de cada pestaña
-# ---------------------------
-st.markdown(
-    """
-    <style>
-      /* Barra de pestañas: permitir overflow horizontal */
-      div[role="tablist"] {
-        overflow-x: auto;
-        white-space: nowrap;
-        -webkit-overflow-scrolling: touch;
-        padding-bottom: 6px;
-      }
-      /* Botones/pestañas: compactar para que quepan más */
-      div[role="tablist"] button[role="tab"] {
-        display: inline-block;
-        padding: 6px 10px;
-        margin-right: 6px;
-        min-width: 88px;
-        font-size: 13px;
-        line-height: 1.1;
-      }
-      /* Panel de contenido: más alto para evitar scroll interno corto */
-      div[role="tabpanel"] {
-        min-height: 600px;
-      }
-      /* En pantallas pequeñas, aseguramos que el tablist sea visible */
-      @media (max-width: 900px) {
-        div[role="tablist"] button[role="tab"] { min-width: 78px; font-size: 12px; padding: 5px 8px; }
-        div[role="tabpanel"] { min-height: 700px; }
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# ---------- Ajuste visual ----------
+TAB_MAX = 8  # si hay más de TAB_MAX entradas en el plan, usamos selector en lugar de pestañas
 
 # ---------- Estado de sesión inicial ----------
 if "approved_subjects" not in st.session_state:
@@ -191,13 +155,7 @@ def update_plan():
 
 # ---------- Callback de submit: lee LOS ESTADOS REALES de los checkboxes y actualiza ----------
 def handle_submit():
-    """
-    Lee explícitamente el estado de cada checkbox (por sus keys) y actualiza
-    st.session_state.approved_subjects con la lista actual. Luego inicializa
-    semester_options y llama a update_plan().
-    """
     selected = []
-    # reconstruir la lista de cursos por semestre (misma lógica usada para construir checkboxes)
     for semester in range(1, 11):
         if courses_by_semester:
             semester_courses = courses_by_semester.get(semester, [])
@@ -205,25 +163,20 @@ def handle_submit():
             semester_courses = [course for course, info in courses.items() if info.get("semester") == semester]
         for idx, course in enumerate(semester_courses):
             key = f"approved_chk_{program}_{semester}_{idx}_{course}"
-            # leer el estado del checkbox desde st.session_state (False por defecto si no existe)
             if st.session_state.get(key, False):
                 selected.append(course)
 
-    # Guardar aprobados y asegurar semester_options inicializadas
     st.session_state.approved_subjects = selected
     sem_now, _ = _current_semester_from_approved()
     for s in range(sem_now, 11):
         st.session_state.semester_options.setdefault(s, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
 
-    # Generar plan (y sincronizar recomendaciones con UI)
     update_plan()
 
 # ---------- Selección de asignaturas aprobadas via FORM (checkboxes) ----------
 st.subheader("Seleccione las asignaturas aprobadas (por semestre)")
 
-# Mostrar un formulario para agrupar la selección y evitar reruns por cada checkbox
 with st.form("approved_form"):
-    # Para cada semestre, usar un expander (cerrado por defecto salvo el semestre actual)
     for semester in range(1, 11):
         if courses_by_semester:
             semester_courses = courses_by_semester.get(semester, [])
@@ -233,131 +186,129 @@ with st.form("approved_form"):
         with st.expander(f"Semestre {semester} ({len(semester_courses)} asignaturas)", expanded=(semester == current_semester)):
             for idx, course in enumerate(semester_courses):
                 key = f"approved_chk_{program}_{semester}_{idx}_{course}"
-                # default ahora se toma de lo guardado en session_state (para mantener persistencia)
                 default = course in st.session_state.approved_subjects
-                # cada checkbox escribe su estado en st.session_state[key]
                 st.checkbox(course, value=default, key=key)
 
-    # Botón del formulario: al enviarlo actualizamos los aprobados y generamos plan
-    # Usamos on_click=handle_submit para leer los estados actuales de todos los checkboxes
     st.form_submit_button("Generar plan de estudios", on_click=handle_submit)
 
-# ---------- Mostrar plan en pestañas (si existe) ----------
+# ---------- Helper para renderizar el contenido de un semestre (reutilizable) ----------
+def render_semester_content(i: int, semester_plan: Dict[str, Any]):
+    """
+    i: índice en la lista plan (usa para generar keys únicas)
+    semester_plan: diccionario con keys: semester, subjects, credits, intersemestral, intersemestral_credits, is_half_time, extra_credits, cost, ...
+    """
+    semester = semester_plan["semester"]
+    effective_semester = min(semester, 10)
+
+    st.session_state.semester_options.setdefault(semester, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
+
+    half_time_key = f"half_time_{program}_{semester}_{i}"
+    is_half_time = st.checkbox(
+        f"Media matrícula (máx {credits_per_semester.get(effective_semester, 0) // 2 - 1} créditos)",
+        value=st.session_state.semester_options[semester].get("is_half_time", False),
+        key=half_time_key,
+    )
+
+    max_extra_credits = 1 if is_half_time else max(0, 25 - credits_per_semester.get(effective_semester, 0))
+    extra_key = f"extra_credits_{program}_{semester}_{i}"
+    extra_credits = st.slider(
+        f"Créditos extra a comprar (máx {max_extra_credits})",
+        0,
+        max_extra_credits,
+        st.session_state.semester_options[semester].get("extra_credits", 0),
+        key=extra_key,
+    )
+
+    temp_approved_for_inter = set(st.session_state.approved_subjects)
+    rec_subjects_for_this_sem = semester_plan.get("subjects", [])
+    temp_approved_for_inter.update(rec_subjects_for_this_sem)
+
+    intersemestral_options = get_intersemestral_options(G, tuple(temp_approved_for_inter))
+    rec_inter = semester_plan.get("intersemestral")
+    intersemestral_display_options = ["Ninguno"] + intersemestral_options
+    if rec_inter and rec_inter not in intersemestral_display_options:
+        intersemestral_display_options.append(rec_inter)
+
+    current_inter = st.session_state.semester_options[semester].get("intersemestral")
+    default_index = 0
+    if current_inter and current_inter in intersemestral_display_options:
+        default_index = intersemestral_display_options.index(current_inter)
+    inter_key = f"intersemestral_{program}_{semester}_{i}"
+    intersemestral_selected = st.selectbox(
+        f"Intersemestral (opcional)",
+        intersemestral_display_options,
+        index=default_index,
+        key=inter_key,
+    )
+
+    # Guardar las opciones del usuario (no se recalcula automáticamente)
+    st.session_state.semester_options[semester] = {
+        "is_half_time": is_half_time,
+        "extra_credits": extra_credits,
+        "intersemestral": intersemestral_selected if intersemestral_selected != "Ninguno" else None,
+    }
+
+    # ------------------ Mostrar créditos (SIEMPRE) ------------------
+    base_cap = credits_per_semester.get(effective_semester, 0)
+    opts = st.session_state.semester_options.get(semester, {})
+    cap_effective = base_cap
+    if opts.get("is_half_time"):
+        cap_effective = max(0, base_cap // 2 - 1)
+    cap_effective += int(opts.get("extra_credits", 0)) if opts else 0
+
+    credits_recommended = semester_plan.get("credits", 0)
+    inter_credits = semester_plan.get("intersemestral_credits", 0)
+
+    st.markdown("**Resumen de créditos (ajustables con opciones actuales):**")
+    st.write(f"- Capacidad efectiva del semestre: **{cap_effective}** créditos")
+    st.write(f"- Créditos recomendados por el plan en este semestre: **{credits_recommended}** créditos")
+    if inter_credits:
+        st.write(f"- Créditos intersemestrales recomendados (serán considerados como aprobados si se activan): **{inter_credits}** créditos")
+    gap = max(0, cap_effective - (credits_recommended + (inter_credits if inter_credits else 0)))
+    st.write(f"- Hueco (capacidad restante si se aceptan las recomendaciones): **{gap}** créditos")
+
+    st.write("**Asignaturas recomendadas (con créditos):**")
+    for subject in semester_plan.get("subjects", []):
+        credits = G.nodes[subject]["credits"] if subject in G.nodes else "?"
+        st.write(f"- {subject} — **{credits}** créditos")
+
+    if semester_plan.get("intersemestral"):
+        intername = semester_plan.get("intersemestral")
+        intercr = G.nodes[intername]["credits"] if intername in G.nodes else 0
+        st.write(f"**Intersemestral recomendado por el plan:** {intername} — **{intercr}** créditos")
+
+    if not HIDE_VALUES:
+        st.write(f"**Costo**: ${semester_plan.get('cost', 0):,.0f}")
+        if semester_plan.get("is_half_time"):
+            st.write("**Media matrícula** (recomendada para optimizar costos)")
+        if semester_plan.get("extra_credits", 0) > 0:
+            st.write(f"**Créditos extra recomendados**: {semester_plan['extra_credits']}")
+
+# ---------- Mostrar plan en pestañas o selector (según tamaño) ----------
 if st.session_state.plan:
     st.subheader("Plan de estudios recomendado")
-    # Mostrar tiempo de la última generación si no ocultamos valores
     if st.session_state.last_plan_time is not None and not HIDE_VALUES:
         st.info(f"Último cálculo: {st.session_state.last_plan_time:.3f} s")
 
-    # Botón para recalcular plan con las opciones actuales (por si el usuario modificó media matrícula/extra/intersemestral)
     if st.button("Recalcular plan con opciones actuales"):
         with st.spinner("Recalculando plan..."):
             update_plan()
         st.success("Plan recalculado ✅")
 
-    # Preparar etiquetas y crear pestañas
     labels = [f"Semestre {p['semester']}{' (repetido)' if p.get('repetition', 1) > 1 else ''}" for p in st.session_state.plan]
-    tabs = st.tabs(labels)
 
-    # Iteramos sobre el plan calculado para mostrar cada pestaña
-    for i, (tab, semester_plan) in enumerate(zip(tabs, st.session_state.plan)):
-        with tab:
-            semester = semester_plan["semester"]
-            effective_semester = min(semester, 10)
-
-            # Asegurar entry en semester_options
-            st.session_state.semester_options.setdefault(semester, {"is_half_time": False, "extra_credits": 0, "intersemestral": None})
-
-            # Media matrícula (estado viene de semester_options)
-            half_time_key = f"half_time_{program}_{semester}_{i}"
-            is_half_time = st.checkbox(
-                f"Media matrícula (máx {credits_per_semester.get(effective_semester, 0) // 2 - 1} créditos)",
-                value=st.session_state.semester_options[semester].get("is_half_time", False),
-                key=half_time_key,
-            )
-
-            # Créditos extra (slider)
-            max_extra_credits = 1 if is_half_time else max(0, 25 - credits_per_semester.get(effective_semester, 0))
-            extra_key = f"extra_credits_{program}_{semester}_{i}"
-            extra_credits = st.slider(
-                f"Créditos extra a comprar (máx {max_extra_credits})",
-                0,
-                max_extra_credits,
-                st.session_state.semester_options[semester].get("extra_credits", 0),
-                key=extra_key,
-            )
-
-            # Intersemestral: calculado teniendo en cuenta materias recomendadas en ese semestre
-            temp_approved_for_inter = set(st.session_state.approved_subjects)
-            rec_subjects_for_this_sem = semester_plan.get("subjects", [])
-            temp_approved_for_inter.update(rec_subjects_for_this_sem)
-
-            intersemestral_options = get_intersemestral_options(G, tuple(temp_approved_for_inter))
-            rec_inter = semester_plan.get("intersemestral")
-            intersemestral_display_options = ["Ninguno"] + intersemestral_options
-            if rec_inter and rec_inter not in intersemestral_display_options:
-                intersemestral_display_options.append(rec_inter)
-
-            current_inter = st.session_state.semester_options[semester].get("intersemestral")
-            default_index = 0
-            if current_inter and current_inter in intersemestral_display_options:
-                default_index = intersemestral_display_options.index(current_inter)
-            inter_key = f"intersemestral_{program}_{semester}_{i}"
-            intersemestral_selected = st.selectbox(
-                f"Intersemestral (opcional)",
-                intersemestral_display_options,
-                index=default_index,
-                key=inter_key,
-            )
-
-            # Guardar las opciones del usuario (no se recalcula automáticamente)
-            st.session_state.semester_options[semester] = {
-                "is_half_time": is_half_time,
-                "extra_credits": extra_credits,
-                "intersemestral": intersemestral_selected if intersemestral_selected != "Ninguno" else None,
-            }
-
-            # ------------------ Mostrar créditos (SIEMPRE) ------------------
-            # Calcular capacidad efectiva del semestre según opciones actuales guardadas en session_state
-            base_cap = credits_per_semester.get(effective_semester, 0)
-            opts = st.session_state.semester_options.get(semester, {})
-            cap_effective = base_cap
-            if opts.get("is_half_time"):
-                cap_effective = max(0, base_cap // 2 - 1)
-            cap_effective += int(opts.get("extra_credits", 0)) if opts else 0
-
-            # Créditos que el plan recomienda en ese semestre (sujeto a que el plan haya sido recalculado)
-            credits_recommended = semester_plan.get("credits", 0)
-            inter_credits = semester_plan.get("intersemestral_credits", 0)
-
-            st.markdown("**Resumen de créditos (ajustables con opciones actuales):**")
-            st.write(f"- Capacidad efectiva del semestre: **{cap_effective}** créditos")
-            st.write(f"- Créditos recomendados por el plan en este semestre: **{credits_recommended}** créditos")
-            if inter_credits:
-                st.write(f"- Créditos intersemestrales recomendados (serán considerados como aprobados si se activan): **{inter_credits}** créditos")
-            # mostrar gap si cabe
-            gap = max(0, cap_effective - (credits_recommended + (inter_credits if inter_credits else 0)))
-            st.write(f"- Hueco (capacidad restante si se aceptan las recomendaciones): **{gap}** créditos")
-
-            # Mostrar asignaturas recomendadas con créditos (SIEMPRE)
-            st.write("**Asignaturas recomendadas (con créditos):**")
-            for subject in semester_plan.get("subjects", []):
-                credits = G.nodes[subject]["credits"] if subject in G.nodes else "?"
-                st.write(f"- {subject} — **{credits}** créditos")
-
-            # Mostrar la intersemestral recomendada (si existe), indicando sus créditos
-            if semester_plan.get("intersemestral"):
-                intername = semester_plan.get("intersemestral")
-                intercr = G.nodes[intername]["credits"] if intername in G.nodes else 0
-                st.write(f"**Intersemestral recomendado por el plan:** {intername} — **{intercr}** créditos")
-
-            # Mensajes no financieros relacionados (si HIDE_VALUES True no mostramos costos)
-            if not HIDE_VALUES:
-                st.write(f"**Costo**: ${semester_plan.get('cost', 0):,.0f}")
-                if semester_plan.get("is_half_time"):
-                    st.write("**Media matrícula** (recomendada para optimizar costos)")
-                if semester_plan.get("extra_credits", 0) > 0:
-                    st.write(f"**Créditos extra recomendados**: {semester_plan['extra_credits']}")
+    if len(labels) <= TAB_MAX:
+        # Usamos pestañas cuando no son muchas
+        tabs = st.tabs(labels)
+        for i, (tab, semester_plan) in enumerate(zip(tabs, st.session_state.plan)):
+            with tab:
+                render_semester_content(i, semester_plan)
+    else:
+        # Mostramos un selectbox para navegar (asegura acceso incluso en pantallas estrechas)
+        sel = st.selectbox("Seleccionar semestre a visualizar", options=labels, index=0)
+        sel_idx = labels.index(sel)
+        # mostramos el contenido del semestre seleccionado
+        render_semester_content(sel_idx, st.session_state.plan[sel_idx])
 
     # No mostramos costo total si HIDE_VALUES True
     if not HIDE_VALUES:
