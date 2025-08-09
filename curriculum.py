@@ -1,12 +1,7 @@
 # curriculum.py
 # Greedy con lookahead + transitive unlock score (weight_by_credits=True)
-# - Prioriza llenar semestre, luego reducir semestres, luego costo (lexicográfico).
-# - Prioridad absoluta a materias mandatorias (Inglés / Core Currículum).
-# - Packing final para aprovechar huecos (prioriza mandatorias).
-# - Media matrícula se considera según umbrales (v. parámetros).
-# - Nuevo: _transitive_unlock_score que valora cadenas largas de prerrequisitos.
-#
-# Ajustes configurables al principio del archivo.
+# Ajuste: intersemestral cuenta como crédito aprobado para avance, PERO
+# no consume la capacidad del semestre (no incrementa los créditos inscritos).
 
 import networkx as nx
 import streamlit as st
@@ -17,10 +12,10 @@ from typing import Iterable, List, Tuple, Dict, Any, Set
 # -------------------------
 # Parámetros ajustables
 # -------------------------
-HALF_CONSIDER_GAP_THRESHOLD = 3      # considerar media matrícula sólo si gap (full-time) >= este valor
-HALF_COST_SAVINGS_THRESHOLD = 0.50   # requerir al menos este % de ahorro para elegir media matrícula
-MAX_LOOKAHEAD = 10                    # semestres a mirar adelante en la heurística
-TRANSITIVE_WEIGHT = 2.0              # peso que se suma al score por unlock transitivo
+HALF_CONSIDER_GAP_THRESHOLD = 5      # considerar media matrícula sólo si gap (full-time) >= este valor
+HALF_COST_SAVINGS_THRESHOLD = 0.05   # requerir al menos este % de ahorro para elegir media matrícula
+MAX_LOOKAHEAD = 2                    # semestres a mirar adelante en la heurística
+TRANSITIVE_WEIGHT = 1.0              # peso que se suma al score por unlock transitivo
 MAX_TRANS_DEPTH = 6                  # profundidad máxima para exploración transitive unlock
 WEIGHT_BY_CREDITS = True             # usar créditos en vez de contar materias en unlock score
 
@@ -401,6 +396,7 @@ def generate_full_plan(
       1) llenar/Acercarse lo máximo posible a la capacidad de cada semestre (packing)
       2) minimizar número total de semestres (estimado)
       3) minimizar costo proyectado (penalidad por gap, media matrícula, intersemestral)
+    Nota: intersemestrales cuentan como aprobados para avance, PERO no consumen la capacidad del semestre.
     """
     approved = list(approved_subjects) if approved_subjects is not None else []
     total_credits_approved = sum(_G.nodes[c]["credits"] for c in approved if c in _G.nodes)
@@ -456,7 +452,7 @@ def generate_full_plan(
                 _G, approved_local, available_subjects, current_sem, cap_tmp, lookahead=lookahead, favor_fill=True
             )
 
-            # post-pack tentativo para evaluar gap real
+            # post-pack tentativo para evaluar gap real (NOTA: aquí credits_selected NO incluye intersemestral)
             subjects_packed = list(subjects_selected)
             credits_packed = credits_selected
             remaining_tmp = cap_tmp - credits_packed
@@ -477,8 +473,7 @@ def generate_full_plan(
             results = []
             for inter_choice in inter_candidates:
                 inter_credits = _G.nodes[inter_choice].get('credits', 0) if inter_choice else 0
-                if credits_packed + inter_credits > cap_tmp:
-                    continue
+                # NOTA: intersemestral NO consume capacidad: por eso NO verificamos credits_packed + inter_credits <= cap_tmp
 
                 # regla: solo considerar intersemestral si reduce número total de semestres
                 if inter_choice:
@@ -494,10 +489,12 @@ def generate_full_plan(
 
                 per_sem_cost = HALF_COST if is_half_time_flag else FULL_COST
                 current_sem_cost = per_sem_cost + (INTER_COST if inter_choice else 0)
-                gap_after = cap_tmp - (credits_packed + inter_credits)
+                # GAP: ahora EXCLUIMOS inter_credits del cálculo del gap, porque son aprobados "por fuera"
+                gap_after = cap_tmp - credits_packed
                 if gap_after < 0:
                     gap_after = 0
                 gap_penalty = gap_after * GAP_PENALTY_PER_CREDIT
+                # proyectamos costo sin descontar inter_credits de coste por semestre (inter es costo aparte ya en current_sem_cost)
                 projected_total_cost = current_sem_cost + gap_penalty + remaining_no_inter * per_sem_cost
 
                 results.append({
@@ -600,7 +597,7 @@ def generate_full_plan(
             'cost': sem_cost,
         })
 
-        # actualizar aprobadas y crédito total
+        # actualizar aprobadas y crédito total: aquí SÍ sumamos intersemestral a aprobados/avance
         approved_local.extend(best_sem_config['subjects'])
         if best_sem_config['intersemestral']:
             approved_local.append(best_sem_config['intersemestral'])
