@@ -35,7 +35,12 @@ def is_mandatory_name(name: str) -> bool:
 # --------------------------------------------------
 
 @st.cache_resource
-def build_curriculum_graph(_courses: Dict[str, Dict[str, Any]]) -> nx.DiGraph:
+def build_curriculum_graph(program: str, _courses: Dict[str, Dict[str, Any]]) -> nx.DiGraph:
+    """
+    Construye un grafo dirigido con nodos = materias y aristas = prerequisitos/corequisitos.
+    Cacheado por `program` para asegurar que cada carrera tenga su propio grafo independiente.
+    """
+    # Nota: `program` es usado sólo para el cache-key y para almacenar metadata en el grafo.
     G = nx.DiGraph()
     for course, info in _courses.items():
         credits = info.get("credits", 0)
@@ -45,6 +50,8 @@ def build_curriculum_graph(_courses: Dict[str, Dict[str, Any]]) -> nx.DiGraph:
             G.add_edge(prereq, course, type="prerequisite")
         for coreq in info.get("corerequisites", []):
             G.add_edge(coreq, course, type="corequisite")
+    # Guardar el programa en metadata por si interesa (debug / inspección)
+    G.graph["program"] = program
     return G
 
 def _normalize_approved(approved_subjects: Iterable[str]) -> Tuple[str, ...]:
